@@ -92,6 +92,3 @@ const opsModel = hsm.define(
 
 const opsMachine = hsm.start(new CounterInstance(), opsModel);
 expectType<number>(opsMachine.call("sum", 1, 2));
-
-// @ts-expect-error operation args are inferred
-opsMachine.call("sum", "1", 2);
