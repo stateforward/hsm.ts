@@ -1,0 +1,53 @@
+{
+  "name": "@stateforward/hsm.ts",
+  "version": "0.1.0",
+  "description": "TypeScript-first state machine library built on @stateforward/hsm",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run build && tsc --noEmit --module NodeNext --moduleResolution NodeNext tests/typecheck.test.ts && node --test tests/runtime.test.mjs"
+  },
+  "keywords": [
+    "state-machine",
+    "hsm",
+    "typescript",
+    "fsm",
+    "hierarchical"
+  ],
+  "author": "HSM Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stateforward/hsm.ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/stateforward/hsm.ts/issues"
+  },
+  "homepage": "https://github.com/stateforward/hsm.ts#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
+  }
+}
