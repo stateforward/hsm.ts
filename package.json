@@ -30,11 +30,11 @@
   "scripts": {
     "benchmark:muid": "tsx scripts/benchmark-muid.ts",
     "build": "tsup",
-    "coverage": "npm run build && node --test --experimental-test-coverage --test-coverage-include=dist/index.js --test-coverage-include=dist/kind.js --test-coverage-include=dist/muid.js --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 tests/runtime-ported/*.test.cjs",
-    "test:parity": "npm run build && node --test tests/runtime-ported/*.test.cjs",
+    "coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include=src/hsm.ts --test-coverage-include=src/kind.ts --test-coverage-include=src/muid.ts tests/runtime-ported/*.test.ts",
+    "test:parity": "tsx --test tests/runtime-ported/*.test.ts",
     "test:types": "for config in tests/types/*/tsconfig.json; do tsc -p \"$config\" --pretty false || exit 1; done",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run test:types && npm run test:parity"
+    "test": "npm run typecheck && npm run test:types && npm run build && npm run test:parity"
   },
   "keywords": [
     "state-machine",

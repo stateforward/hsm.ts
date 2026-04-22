@@ -1,5 +1,5 @@
-const KindSystem = require('../../dist/kind.cjs');
-const assert = require('assert');
+import * as KindSystem from "../../src/kind.ts";
+import assert from "node:assert";
 
 // Import the functions we need
 const { kind, isKind } = KindSystem;

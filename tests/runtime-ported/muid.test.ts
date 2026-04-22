@@ -4,9 +4,9 @@
 
 // Import the MUID module (adjust path as needed)
 
-const test = require('node:test');
-const assert = require('node:assert');
-const muid = require('../../dist/muid.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as muid from "../../src/muid.ts";
 
 
 // Helper functions for 64-bit value comparison

@@ -1,6 +1,6 @@
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Destructure the path utilities we'll be testing
 const { join, dirname, isAbsolute } = hsm;

@@ -4,11 +4,11 @@
  * Tests cover all core functionality, edge cases, and error handling
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
+import test from "node:test";
+import assert from "node:assert";
 
 // Import HSM module
-const hsm = require('../../dist/index.cjs');
+import * as hsm from "../../src/index.ts";
 
 
 

@@ -3,9 +3,9 @@
  * Tests fundamental HSM features including state transitions, lifecycle methods, and basic event handling
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Test instance implementation
 class BasicInstance extends hsm.Instance {

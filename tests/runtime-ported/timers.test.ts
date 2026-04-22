@@ -3,9 +3,9 @@
  * Tests time-based events that fire after delays or at intervals
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Helper to create a delay promise
 function delay(ms) {

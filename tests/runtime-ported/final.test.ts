@@ -3,9 +3,9 @@
  * Tests terminal states that indicate completion of a state machine region
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Test instance implementation
 class FinalInstance extends hsm.Instance {

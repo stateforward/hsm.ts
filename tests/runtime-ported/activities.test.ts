@@ -3,9 +3,9 @@
  * Tests async activities that run while in a state and can be aborted on exit
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Helper to create a delay promise
 function delay(ms) {

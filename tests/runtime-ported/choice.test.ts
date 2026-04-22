@@ -3,9 +3,9 @@
  * Tests dynamic branching based on runtime conditions using choice pseudostates
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Test instance implementation
 class ChoiceInstance extends hsm.Instance {

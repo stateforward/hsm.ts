@@ -3,9 +3,9 @@
  * Tests events that are held and re-dispatched when the machine moves to a state that can handle them
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Helper to create a delay promise
 function delay(ms) {

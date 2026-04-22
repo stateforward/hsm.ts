@@ -3,9 +3,9 @@
  * Tests boolean guard expressions that control transition enablement
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Test instance implementation
 class GuardInstance extends hsm.Instance {

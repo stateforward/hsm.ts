@@ -3,9 +3,9 @@
  * Tests action execution order and behavior in various scenarios
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const hsm = require('../../dist/index.cjs');
+import test from "node:test";
+import assert from "node:assert";
+import * as hsm from "../../src/index.ts";
 
 // Test instance implementation
 class ActionInstance extends hsm.Instance {
