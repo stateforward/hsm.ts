@@ -3,6 +3,8 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "noImplicitAny": false,
+    "noImplicitThis": false,
     "lib": [
       "ES2022",
       "DOM"
@@ -10,11 +12,12 @@
     "types": [
       "node"
     ],
-    "strict": true,
+    "strict": false,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true
   },

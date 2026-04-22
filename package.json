@@ -1,7 +1,7 @@
 {
   "name": "@stateforward/hsm.ts",
   "version": "0.1.0",
-  "description": "TypeScript-first state machine library built on @stateforward/hsm",
+  "description": "Standalone TypeScript hierarchical state machine library",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -11,6 +11,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./kind": {
+      "types": "./dist/kind.d.ts",
+      "import": "./dist/kind.js",
+      "require": "./dist/kind.cjs"
+    },
+    "./muid": {
+      "types": "./dist/muid.d.ts",
+      "import": "./dist/muid.js",
+      "require": "./dist/muid.cjs"
     }
   },
   "files": [
@@ -18,9 +28,13 @@
     "README.md"
   ],
   "scripts": {
+    "benchmark:muid": "tsx scripts/benchmark-muid.ts",
     "build": "tsup",
+    "coverage": "npm run build && node --test --experimental-test-coverage --test-coverage-include=dist/index.js --test-coverage-include=dist/kind.js --test-coverage-include=dist/muid.js --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 tests/runtime-ported/*.test.cjs",
+    "test:parity": "npm run build && node --test tests/runtime-ported/*.test.cjs",
+    "test:types": "for config in tests/types/*/tsconfig.json; do tsc -p \"$config\" --pretty false || exit 1; done",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run build && tsc --noEmit --module NodeNext --moduleResolution NodeNext tests/typecheck.test.ts && node --test tests/runtime.test.mjs"
+    "test": "npm run typecheck && npm run test:types && npm run test:parity"
   },
   "keywords": [
     "state-machine",
@@ -48,6 +62,7 @@
   "devDependencies": {
     "@types/node": "^22.14.1",
     "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.8.3"
   }
 }

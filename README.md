@@ -1,12 +1,12 @@
 # hsm.ts
 
-TypeScript-first wrapper library for [`@stateforward/hsm`](https://www.npmjs.com/package/@stateforward/hsm).
+Standalone TypeScript implementation of the HSM DSL and runtime.
 
-This package keeps the proven `hsm.js` runtime and exposes a modern TypeScript build with richer compile-time types. The initial setup focuses on:
+This package ships a native TypeScript runtime with richer compile-time types. The current build focuses on:
 
-- standard TypeScript source instead of JSDoc-authored declarations
+- standard TypeScript source for both the DSL and runtime
 - modern package outputs via `tsup`
-- typed wrappers for `define`, `attribute`, `state`, `initial`, `transition`, `choice`, and `start`
+- PascalCase DSL/runtime exports with camelCase compatibility aliases
 - attribute-aware `sm.get("name")` and `sm.set("name", value)` typing on the returned machine
 
 ## Development
