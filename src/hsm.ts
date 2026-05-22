@@ -156,6 +156,7 @@ type Config = {
         clearTimeout?: CancelFunction;
         now?: () => number;
     };
+    queue?: Queue;
 };
 type ClockConfig = {
     setTimeout: TimerFunction;
@@ -167,6 +168,8 @@ type QueueShape = {
   front: EventRecord[];
   back: Array<EventRecord | undefined>;
   backHead: number;
+  push: (event: EventRecord) => void;
+  pop: () => EventRecord | undefined;
   len: () => number;
 };
 
@@ -2363,14 +2366,11 @@ export class Queue {
         return event;
     }
 
-    push(...events: EventRecord[]): void {
-        for (var i = 0; i < events.length; i++) {
-            var event = events[i];
-            if (isKind(event.kind, kinds.CompletionEvent)) {
-                this.front.push(event);
-            } else {
-                this.back.push(event);
-            }
+    push(event: EventRecord): void {
+        if (isKind(event.kind, kinds.CompletionEvent)) {
+            this.front.push(event);
+        } else {
+            this.back.push(event);
         }
     }
 }
@@ -2638,7 +2638,7 @@ class HSM {
         this.ctx = ctxOrInstance as Context;
         this.model = maybeModelOrConfig as Model;
         this.currentState = this.model;
-        this.queue = new Queue();
+        this.queue = maybeConfig?.queue || new Queue();
         this.active = {};
         this.processing = false;
         this.id = id;
