@@ -156,7 +156,7 @@ type Config = {
         clearTimeout?: CancelFunction;
         now?: () => number;
     };
-    queue?: Queue;
+    queue?: QueueShape;
 };
 type ClockConfig = {
     setTimeout: TimerFunction;
@@ -165,9 +165,6 @@ type ClockConfig = {
 };
 
 type QueueShape = {
-  front: EventRecord[];
-  back: Array<EventRecord | undefined>;
-  backHead: number;
   push: (event: EventRecord) => void;
   pop: () => EventRecord | undefined;
   len: () => number;
@@ -2343,15 +2340,22 @@ export class Queue {
     front: EventRecord[] = [];
     back: Array<EventRecord | undefined> = [];
     backHead = 0;
+    private fifo?: QueueShape;
+
+    constructor(fifo?: QueueShape) {
+        this.fifo = fifo;
+    }
 
     len(): number {
-        return this.front.length + (this.back.length - this.backHead);
+        return this.front.length + (this.fifo ? this.fifo.len() : this.back.length - this.backHead);
     }
 
     pop(): EventRecord | undefined {
         var event: EventRecord | undefined;
         if (this.front.length > 0) {
             event = this.front.pop() as Event | undefined; // O(1) for completion events
+        } else if (this.fifo) {
+            event = this.fifo.pop();
         } else if (this.backHead < this.back.length) {
             event = this.back[this.backHead];
             this.back[this.backHead] = undefined; // Help GC
@@ -2369,6 +2373,8 @@ export class Queue {
     push(event: EventRecord): void {
         if (isKind(event.kind, kinds.CompletionEvent)) {
             this.front.push(event);
+        } else if (this.fifo) {
+            this.fifo.push(event);
         } else {
             this.back.push(event);
         }
@@ -2638,7 +2644,7 @@ class HSM {
         this.ctx = ctxOrInstance as Context;
         this.model = maybeModelOrConfig as Model;
         this.currentState = this.model;
-        this.queue = maybeConfig?.queue || new Queue();
+        this.queue = new Queue(maybeConfig?.queue);
         this.active = {};
         this.processing = false;
         this.id = id;
