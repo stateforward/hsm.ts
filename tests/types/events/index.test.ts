@@ -34,6 +34,21 @@ const model = hsm.define(
       }),
       hsm.target("/running"),
     ),
+    hsm.transition(
+      hsm.on("mutable"),
+      hsm.effect((ctx, instance, event) => {
+        event.name = "mutated";
+        event.kind = hsm.kinds.ErrorEvent;
+        event.schema = { changed: true };
+        event.source = "source";
+        event.target = "target";
+        event.id = "id";
+        event.qualifiedName = "qualified";
+        void ctx;
+        void instance;
+      }),
+      hsm.target("."),
+    ),
   ),
     hsm.state(
       "running",
@@ -201,7 +216,7 @@ helperStarted.dispatch({
 const currentState: "/Eventful/idle" | "/Eventful/running" = typedStarted.state();
 const currentSnapshot: hsm.SnapshotOf<typeof model> = typedStarted.takeSnapshot();
 
-const eventNames: "pause" | "tick" | "stop" =
+const eventNames: "mutable" | "pause" | "tick" | "stop" =
   null as any as hsm.EventNamesOf<typeof model>;
 const tickDispatchEvent: hsm.DispatchEventOfName<typeof model, "tick"> = {
   kind: Tick.kind,

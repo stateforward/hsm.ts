@@ -72,14 +72,14 @@ test('Basic deferred event - held and processed later', async function () {
   assert.strictEqual(instance.state(), '/BasicDeferredMachine/busy');
 
   // Send deferred event while in busy state
-  instance.dispatch({ name: 'process', kind: hsm.kinds.Event });
+  await instance.dispatch({ name: 'process', kind: hsm.kinds.Event });
 
   // Should still be in busy state, event deferred
   assert.strictEqual(instance.state(), '/BasicDeferredMachine/busy');
   assert.deepStrictEqual(instance.log, ['busy-entry']);
 
   // Transition to idle state
-  instance.dispatch({ name: 'ready', kind: hsm.kinds.Event });
+  await instance.dispatch({ name: 'ready', kind: hsm.kinds.Event });
 
   // Should now process the deferred event
   await delay(10);
@@ -93,6 +93,42 @@ test('Basic deferred event - held and processed later', async function () {
   assert.strictEqual(instance.state(), '/BasicDeferredMachine/working');
 
   hsm.stop(instance);
+});
+
+test('Deferred events still flow through context and groups', async function () {
+  const ctx = new hsm.Context();
+  const first = new DeferredInstance();
+  const second = new DeferredInstance();
+  const model = hsm.define('DeferredResultAggregateMachine',
+    hsm.initial(
+      hsm.target('blocked')
+    ),
+    hsm.state('blocked',
+      hsm.defer('work'),
+      hsm.transition(
+        hsm.on('release'),
+        hsm.target('../ready')
+      )
+    ),
+    hsm.state('ready',
+      hsm.transition(
+        hsm.on('work'),
+        hsm.target('.')
+      )
+    )
+  );
+
+  hsm.start(ctx, first, model);
+  hsm.start(ctx, second, model);
+  const ids = Object.keys(ctx.instances);
+  const group = hsm.makeGroup(first, second);
+
+  await hsm.dispatchTo(ctx, { name: 'work', kind: hsm.kinds.Event }, ids[0]);
+  await hsm.dispatchAll(ctx, { name: 'work', kind: hsm.kinds.Event });
+  await group.dispatch({ name: 'work', kind: hsm.kinds.Event });
+  await group.dispatch({ name: 'release', kind: hsm.kinds.Event });
+  assert.strictEqual(first.state(), '/DeferredResultAggregateMachine/ready');
+  assert.strictEqual(second.state(), '/DeferredResultAggregateMachine/ready');
 });
 
 test('Multiple deferred events processed in order', async function () {

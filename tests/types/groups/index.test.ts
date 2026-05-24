@@ -49,8 +49,10 @@ const first = hsm.start(new FirstInstance(), firstModel);
 const second = hsm.start(new SecondInstance(), secondModel);
 
 const group = hsm.makeGroup(first, second);
+const identifiedGroup = hsm.makeGroup("typed-group", first, second);
 
 group.dispatch({ kind: 0, name: "go", data: { step: 1 } });
+identifiedGroup.dispatch({ kind: 0, name: "go", data: { step: 1 } });
 group.dispatch({ kind: 0, name: "flip", data: { flag: true } });
 // @ts-expect-error dispatch is limited to the member event union
 group.dispatch({ kind: 0, name: "missing" });
@@ -70,7 +72,9 @@ group.call("toggle");
 group.call("sum", "1", 2);
 
 const groupSnapshot = group.takeSnapshot();
+const identifiedSnapshot = identifiedGroup.takeSnapshot();
 const groupFirstSnapshot: hsm.SnapshotOf<typeof firstModel> = groupSnapshot.members[0];
+const identifiedFirstSnapshot: hsm.SnapshotOf<typeof firstModel> = identifiedSnapshot.members[0];
 const groupSecondSnapshot: hsm.SnapshotOf<typeof secondModel> = groupSnapshot.members[1];
 const groupFirstShared: string = groupSnapshot.members[0].attributes.shared;
 const groupSecondFlag: boolean = groupSnapshot.members[1].attributes.flag;
@@ -90,6 +94,7 @@ const nestedThirdSnapshot: hsm.SnapshotOf<typeof firstModel> = nestedSnapshot.me
 nestedSnapshot.members[3];
 
 void groupSum;
+void identifiedFirstSnapshot;
 void nestedSum;
 void groupFirstSnapshot;
 void groupSecondSnapshot;

@@ -27,6 +27,16 @@ type EventRecord = {
   qualifiedName?: string;
 };
 
+const EVENT_METADATA_KEYS = [
+    "name",
+    "qualifiedName",
+    "source",
+    "target",
+    "id",
+    "kind",
+    "schema",
+] as const;
+
 type Element = {
   kind: Kind;
   qualifiedName: Path;
@@ -55,6 +65,8 @@ type AttributeDefinition = {
     qualifiedName: string;
     hasDefault: boolean;
     defaultValue?: any;
+    hasType?: boolean;
+    valueType?: unknown;
 };
 
 type OperationDefinition = {
@@ -122,19 +134,32 @@ type PartialElement<T extends Element = Element, M extends Model = Model> = (
   elements: Element[],
 ) => T | void;
 
-type Snapshot = {
+type SnapshotEvent = Readonly<{
+    event: string;
+    Name: string;
+    Kind: Kind;
+    target?: string;
+    Target?: string;
+    guard: boolean;
+    Guard: boolean;
+    schema?: any;
+    Schema?: any;
+}>;
+
+type Snapshot = Readonly<{
     id: string;
+    ID: string;
     qualifiedName: string;
+    QualifiedName: string;
     state: string;
-    attributes: Record<string, any>;
+    State: string;
+    attributes: Readonly<Record<string, any>>;
+    Attributes: Readonly<Record<string, any>>;
     queueLen: number;
-    events: Array<{
-        event: string;
-        target?: string;
-        guard: boolean;
-        schema?: any;
-    }>;
-};
+    QueueLen: number;
+    events: readonly SnapshotEvent[];
+    Events: readonly SnapshotEvent[];
+}>;
 
 type ActiveContext = {
   listeners: Array<() => void>;
@@ -147,28 +172,41 @@ type Active = {
   promise: Promise<void>;
 };
 
-type Config = {
+type PartialClockConfig = Partial<ClockConfig>;
+
+export interface Config {
+    ID?: string;
+    Name?: string;
+    Data?: any;
+    Clock?: PartialClockConfig;
+    Queue?: QueueShape;
     id?: string;
     name?: string;
     data?: any;
-    clock?: {
-        setTimeout?: TimerFunction;
-        clearTimeout?: CancelFunction;
-        now?: () => number;
-    };
+    clock?: PartialClockConfig;
     queue?: QueueShape;
-};
+}
 type ClockConfig = {
     setTimeout: TimerFunction;
     clearTimeout: CancelFunction;
     now: () => number;
 };
 
-type QueueShape = {
+type LowercaseQueueShape = {
   push: (event: EventRecord) => void | unknown;
   pop: () => EventRecord | undefined | unknown;
   len: () => number | unknown;
 };
+
+type CanonicalQueueShape = {
+  Push: (context: Context, event: EventRecord) => void | unknown;
+  Pop: (context: Context) => EventRecord | undefined | unknown;
+  Len: (context: Context) => number | unknown;
+};
+
+type QueueShape = LowercaseQueueShape | CanonicalQueueShape;
+
+export type Completion = Promise<void>;
 
 type StripLeadingSlash<S extends string> = S extends `/${infer Rest}` ? Rest : S;
 type StripTrailingSlash<S extends string> = S extends `${infer Rest}/` ? Rest : S;
@@ -371,6 +409,17 @@ export type AttributeSpec<Name extends string = string, Value = unknown> = {
     name: Name;
     value: Value;
 };
+
+type AttributeValueFromTypeToken<TypeToken> =
+    TypeToken extends StringConstructor ? string :
+    TypeToken extends NumberConstructor ? number :
+    TypeToken extends BooleanConstructor ? boolean :
+    TypeToken extends BigIntConstructor ? bigint :
+    TypeToken extends SymbolConstructor ? symbol :
+    TypeToken extends ArrayConstructor ? unknown[] :
+    TypeToken extends DateConstructor ? Date :
+    TypeToken extends abstract new (...args: any[]) => infer Instance ? Instance :
+    unknown;
 
 export type OperationSpec<
     Name extends string = string,
@@ -1597,12 +1646,18 @@ type InitialStateCandidates<M extends TypedModel<any, any, any, any, any, any, a
     ModelStateMeta<M>['initials'];
 
 export type SnapshotOf<M extends TypedModel<any, any, any, any, any, any, any, any>> = {
-    id: string;
-    qualifiedName: string;
-    state: StatePathsOf<M>;
-    attributes: AttributesOf<M>;
-    queueLen: number;
-    events: EventSnapshotOf<M>[];
+    readonly id: string;
+    readonly ID: string;
+    readonly qualifiedName: string;
+    readonly QualifiedName: string;
+    readonly state: StatePathsOf<M>;
+    readonly State: StatePathsOf<M>;
+    readonly attributes: Readonly<AttributesOf<M>>;
+    readonly Attributes: Readonly<AttributesOf<M>>;
+    readonly queueLen: number;
+    readonly QueueLen: number;
+    readonly events: readonly EventSnapshotOf<M>[];
+    readonly Events: readonly EventSnapshotOf<M>[];
 };
 
 type EventTargetForName<
@@ -1617,12 +1672,17 @@ type EventTargetForName<
     : never;
 
 export type EventSnapshotOf<M extends TypedModel<any, any, any, any, any, any, any, any>> = {
-    [Name in EventNamesFromTransitions<M>]: {
-        event: Name;
-        target: EventTargetForName<M, Name>;
-        guard: boolean;
-        schema?: EventSchemaFor<M, Name>;
-    };
+    [Name in EventNamesFromTransitions<M>]: Readonly<{
+        readonly event: Name;
+        readonly Name: Name;
+        readonly Kind: Kind;
+        readonly target: EventTargetForName<M, Name>;
+        readonly Target: EventTargetForName<M, Name>;
+        readonly guard: boolean;
+        readonly Guard: boolean;
+        readonly schema?: EventSchemaFor<M, Name>;
+        readonly Schema?: EventSchemaFor<M, Name>;
+    }>;
 }[EventNamesFromTransitions<M>];
 
 export type BehaviorCallbackFor<
@@ -1640,13 +1700,16 @@ export type MachineInstanceFor<
 > = M extends TypedModel<infer A, infer O, any, any, any, any, any, any>
     ? Omit<I, "dispatch" | "state" | "takeSnapshot" | "get" | "set" | "call"> & {
         __hsm_model: M;
-        dispatch(event: DispatchEventsOf<M>): void;
+        dispatch(event: DispatchEventsOf<M>): Completion;
         state(): StatePathsOf<M>;
         takeSnapshot(): SnapshotOf<M>;
         get<K extends keyof A & string>(name: K): A[K];
         get(name: string): unknown;
-        set<K extends keyof A & string>(name: K, value: A[K]): void;
-        set(name: string, value: unknown): void;
+        set<K extends keyof A & string>(name: K, value: A[K]): Completion;
+        set<Name extends string>(
+            name: Name extends keyof A & string ? never : Name,
+            value: unknown,
+        ): Completion;
         call<K extends keyof O & string>(
             name: K,
             ...args: Parameters<Extract<O[K], (...args: any[]) => any>>
@@ -1678,7 +1741,7 @@ type GroupModelOf<Member> =
 type GroupDispatchEventOf<Member> =
     GroupModelOf<Member> extends infer Model extends TypedModel<any, any, any, any, any, any, any, any>
         ? DispatchEventsOf<Model>
-        : Member extends { dispatch(event: infer Event): void }
+        : Member extends { dispatch(event: infer Event): unknown }
             ? Event
             : EventRecord;
 
@@ -1756,14 +1819,14 @@ type GroupSnapshotOfMember<Member> =
 
 type GroupSnapshotsOfFlattenedMembers<Members extends readonly unknown[]> =
     Members extends readonly [infer Head, ...infer Tail]
-        ? [
+        ? readonly [
             GroupSnapshotOfMember<Head>,
             ...GroupSnapshotsOfFlattenedMembers<Tail>,
         ]
-        : [];
+        : readonly [];
 
 export type GroupSnapshotOf<Members extends readonly unknown[]> = Snapshot & {
-    members: GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>;
+    readonly members: GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>;
 };
 
 type BuilderWithSpec<Signature, Spec> = Signature & { readonly __hsmSpec: Spec };
@@ -1781,12 +1844,12 @@ function attachSpec<Signature, Spec>(
 }
 
 type InternalRuntime = {
-  dispatch: (event: EventRecord) => void;
+  dispatch: (event: EventRecord) => Completion;
   state: () => string;
   context: () => ActiveContext;
   clock: ClockConfig;
   get: (name: string) => unknown;
-  set: (name: string, value: unknown) => void;
+  set: (name: string, value: unknown) => Completion;
   invoke: (name: string, ctx: Context, args: Array<unknown>) => unknown;
   call: (name: string, ...args: unknown[]) => unknown;
   restart: (data?: unknown) => void;
@@ -1796,11 +1859,11 @@ type InternalRuntime = {
   readonly id: string;
   readonly model: any;
   readonly name: string;
-  readonly queue: QueueShape;
+  readonly queue: Queue;
   readonly processing: boolean;
 };
 
-export type { Snapshot, Config, ClockConfig };
+export type { Snapshot, ClockConfig, QueueShape };
 
 type InternalRuntimeMap = WeakMap<object, InternalRuntime>;
 const runtimeByInstance: InternalRuntimeMap = new WeakMap();
@@ -2116,6 +2179,98 @@ export const DefaultClock: Required<ClockConfig> = {
     },
 };
 
+function isConfigObject(value: unknown): value is Config {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function configID(config: Config | undefined): string | undefined {
+    return config?.ID ?? config?.id;
+}
+
+function configName(config: Config | undefined): string | undefined {
+    return config?.Name ?? config?.name;
+}
+
+function configData(config: Config | undefined): unknown {
+    return config?.Data ?? config?.data;
+}
+
+function configClock(config: Config | undefined): PartialClockConfig | undefined {
+    return config?.Clock ?? config?.clock;
+}
+
+function configQueue(config: Config | undefined): QueueShape | undefined {
+    return config?.Queue ?? config?.queue;
+}
+
+function validateQueueShape(fifo: QueueShape | undefined): QueueShape | undefined {
+    if (!fifo) {
+        return undefined;
+    }
+    var hasCanonical = "Push" in fifo || "Pop" in fifo || "Len" in fifo;
+    var canonicalComplete =
+        typeof (fifo as Partial<CanonicalQueueShape>).Push === "function" &&
+        typeof (fifo as Partial<CanonicalQueueShape>).Pop === "function" &&
+        typeof (fifo as Partial<CanonicalQueueShape>).Len === "function";
+    var lowercaseComplete =
+        typeof (fifo as Partial<LowercaseQueueShape>).push === "function" &&
+        typeof (fifo as Partial<LowercaseQueueShape>).pop === "function" &&
+        typeof (fifo as Partial<LowercaseQueueShape>).len === "function";
+    if (hasCanonical ? canonicalComplete : lowercaseComplete) {
+        return fifo;
+    }
+    throw new TypeError("Queue requires complete Push/Pop/Len or push/pop/len hooks");
+}
+
+function validateNameNoSlash(kind: string, name: string): void {
+    if (name.indexOf("/") !== -1) {
+        throw new TypeError(kind + ' name "' + name + '" cannot contain "/"');
+    }
+}
+
+export function Config(config?: Config): Config;
+export function Config(
+    ID?: string,
+    Name?: string,
+    Data?: unknown,
+    Clock?: PartialClockConfig,
+    Queue?: QueueShape,
+): Config;
+export function Config(
+    configOrID?: Config | string,
+    Name?: string,
+    Data?: unknown,
+    Clock?: PartialClockConfig,
+    Queue?: QueueShape,
+): Config {
+    var input = isConfigObject(configOrID)
+        ? configOrID
+        : {
+              ID: configOrID,
+              Name,
+              Data,
+              Clock,
+              Queue,
+          };
+    var id = configID(input);
+    var name = configName(input);
+    var data = configData(input);
+    var clockValue = configClock(input);
+    var queueValue = configQueue(input);
+    return {
+        ID: id,
+        Name: name,
+        Data: data,
+        Clock: clockValue,
+        Queue: queueValue,
+        id,
+        name,
+        data,
+        clock: clockValue,
+        queue: queueValue,
+    };
+}
+
 
 export function event<Name extends string = string, Schema = unknown>(
     name: Name,
@@ -2218,6 +2373,273 @@ function coerceTimepoint(value: unknown): number {
         return value.getTime();
     }
     return coerceDuration(value);
+}
+
+function matchesDefaultRuntimeType(defaultValue: unknown, value: unknown): boolean {
+    if (defaultValue === null || value === null) {
+        return defaultValue === null && value === null;
+    }
+    var defaultType = typeof defaultValue;
+    if (typeof value !== defaultType) {
+        return false;
+    }
+    if (defaultType !== "object") {
+        return true;
+    }
+    return Object.getPrototypeOf(value) === Object.getPrototypeOf(defaultValue);
+}
+
+function isRuntimeTypeToken(value: unknown): value is Function {
+    return typeof value === "function";
+}
+
+function matchesRuntimeTypeToken(type: unknown, value: unknown): boolean {
+    if (!isRuntimeTypeToken(type)) {
+        return true;
+    }
+    if (type === String) {
+        return typeof value === "string";
+    }
+    if (type === Number) {
+        return typeof value === "number";
+    }
+    if (type === Boolean) {
+        return typeof value === "boolean";
+    }
+    if (type === BigInt) {
+        return typeof value === "bigint";
+    }
+    if (type === Symbol) {
+        return typeof value === "symbol";
+    }
+    if (type === Array) {
+        return Array.isArray(value);
+    }
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+        return false;
+    }
+    var prototype = (type as { prototype?: unknown }).prototype;
+    return prototype === undefined
+        ? value instanceof type
+        : Object.getPrototypeOf(value) === prototype;
+}
+
+function freezeSnapshotObject<T extends object>(value: T): Readonly<T> {
+    try {
+        return Object.freeze(value);
+    } catch (_error) {
+        return value;
+    }
+}
+
+function cloneSnapshotValue(value: unknown, seen?: Map<object, unknown>): unknown {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+        return value;
+    }
+    if (typeof value === "function") {
+        return value;
+    }
+    var objectValue = value as object;
+    var visited = seen || new Map<object, unknown>();
+    if (visited.has(objectValue)) {
+        return visited.get(objectValue);
+    }
+    if (value instanceof Date) {
+        var dateCopy = new Date(value.getTime());
+        visited.set(objectValue, dateCopy);
+        return freezeSnapshotObject(dateCopy);
+    }
+    if (value instanceof RegExp) {
+        var regexpCopy = new RegExp(value.source, value.flags);
+        regexpCopy.lastIndex = value.lastIndex;
+        visited.set(objectValue, regexpCopy);
+        return freezeSnapshotObject(regexpCopy);
+    }
+    if (ArrayBuffer.isView(value)) {
+        var viewCopy = new (value.constructor as { new (source: typeof value): typeof value })(value);
+        visited.set(objectValue, viewCopy);
+        return viewCopy;
+    }
+    if (value instanceof ArrayBuffer) {
+        var bufferCopy = value.slice(0);
+        visited.set(objectValue, bufferCopy);
+        return freezeSnapshotObject(bufferCopy);
+    }
+    if (Array.isArray(value)) {
+        var arrayCopy: unknown[] = [];
+        visited.set(objectValue, arrayCopy);
+        for (var i = 0; i < value.length; i++) {
+            arrayCopy[i] = cloneSnapshotValue(value[i], visited);
+        }
+        return freezeSnapshotObject(arrayCopy);
+    }
+    if (value instanceof Map) {
+        var mapCopy = new Map<unknown, unknown>();
+        visited.set(objectValue, mapCopy);
+        value.forEach(function (entryValue, entryKey) {
+            mapCopy.set(
+                cloneSnapshotValue(entryKey, visited),
+                cloneSnapshotValue(entryValue, visited),
+            );
+        });
+        return freezeSnapshotObject(mapCopy);
+    }
+    if (value instanceof globalThis.Set) {
+        var setCopy = new globalThis.Set<unknown>();
+        visited.set(objectValue, setCopy);
+        value.forEach(function (entryValue) {
+            setCopy.add(cloneSnapshotValue(entryValue, visited));
+        });
+        return freezeSnapshotObject(setCopy);
+    }
+    var prototype = Object.getPrototypeOf(value);
+    var copy = Object.create(prototype) as Record<PropertyKey, unknown>;
+    visited.set(objectValue, copy);
+    var keys = Reflect.ownKeys(value);
+    for (var keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+        var key = keys[keyIndex];
+        if (Object.prototype.propertyIsEnumerable.call(value, key)) {
+            copy[key] = cloneSnapshotValue((value as Record<PropertyKey, unknown>)[key], visited);
+        }
+    }
+    return freezeSnapshotObject(copy);
+}
+
+function cloneRuntimeValue(value: unknown, seen?: Map<object, unknown>): unknown {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+        return value;
+    }
+    if (typeof value === "function") {
+        return value;
+    }
+    var objectValue = value as object;
+    var visited = seen || new Map<object, unknown>();
+    if (visited.has(objectValue)) {
+        return visited.get(objectValue);
+    }
+    if (value instanceof Date) {
+        var dateCopy = new Date(value.getTime());
+        visited.set(objectValue, dateCopy);
+        return dateCopy;
+    }
+    if (value instanceof RegExp) {
+        var regexpCopy = new RegExp(value.source, value.flags);
+        regexpCopy.lastIndex = value.lastIndex;
+        visited.set(objectValue, regexpCopy);
+        return regexpCopy;
+    }
+    if (ArrayBuffer.isView(value)) {
+        var viewCopy = new (value.constructor as { new (source: typeof value): typeof value })(value);
+        visited.set(objectValue, viewCopy);
+        return viewCopy;
+    }
+    if (value instanceof ArrayBuffer) {
+        var bufferCopy = value.slice(0);
+        visited.set(objectValue, bufferCopy);
+        return bufferCopy;
+    }
+    if (Array.isArray(value)) {
+        var arrayCopy: unknown[] = [];
+        visited.set(objectValue, arrayCopy);
+        for (var i = 0; i < value.length; i++) {
+            arrayCopy[i] = cloneRuntimeValue(value[i], visited);
+        }
+        return arrayCopy;
+    }
+    if (value instanceof Map) {
+        var mapCopy = new Map<unknown, unknown>();
+        visited.set(objectValue, mapCopy);
+        value.forEach(function (entryValue, entryKey) {
+            mapCopy.set(
+                cloneRuntimeValue(entryKey, visited),
+                cloneRuntimeValue(entryValue, visited),
+            );
+        });
+        return mapCopy;
+    }
+    if (value instanceof globalThis.Set) {
+        var setCopy = new globalThis.Set<unknown>();
+        visited.set(objectValue, setCopy);
+        value.forEach(function (entryValue) {
+            setCopy.add(cloneRuntimeValue(entryValue, visited));
+        });
+        return setCopy;
+    }
+    var prototype = Object.getPrototypeOf(value);
+    var copy = Object.create(prototype) as Record<PropertyKey, unknown>;
+    visited.set(objectValue, copy);
+    var keys = Reflect.ownKeys(value);
+    for (var keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+        var key = keys[keyIndex];
+        if (Object.prototype.propertyIsEnumerable.call(value, key)) {
+            copy[key] = cloneRuntimeValue((value as Record<PropertyKey, unknown>)[key], visited);
+        }
+    }
+    return copy;
+}
+
+function snapshotAttributes(attributes: Record<string, unknown>): Snapshot["attributes"] {
+    var copy: Record<string, unknown> = {};
+    for (var key in attributes) {
+        copy[key] = cloneSnapshotValue(attributes[key]);
+    }
+    return freezeSnapshotObject(copy);
+}
+
+function freezeSnapshotEvents(events: SnapshotEvent[]): Snapshot["events"] {
+    for (var i = 0; i < events.length; i++) {
+        freezeSnapshotObject(events[i]);
+    }
+    return freezeSnapshotObject(events);
+}
+
+function makeSnapshot(
+    id: string,
+    qualifiedName: string,
+    state: string,
+    attributes: Snapshot["attributes"],
+    queueLen: number,
+    events: Snapshot["events"],
+    extra?: Record<string, unknown>,
+): Snapshot {
+    return freezeSnapshotObject({
+        id,
+        ID: id,
+        qualifiedName,
+        QualifiedName: qualifiedName,
+        state,
+        State: state,
+        attributes,
+        Attributes: attributes,
+        queueLen,
+        QueueLen: queueLen,
+        events,
+        Events: events,
+        ...(extra || {}),
+    });
+}
+
+function cloneEventForDispatch(event: EventRecord): EventRecord {
+    var copy = Object.create(Object.getPrototypeOf(event)) as Record<PropertyKey, unknown>;
+    var keys = Object.keys(event);
+    for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        copy[key] = (event as unknown as Record<PropertyKey, unknown>)[key];
+    }
+    for (var j = 0; j < EVENT_METADATA_KEYS.length; j++) {
+        var metadataKey = EVENT_METADATA_KEYS[j];
+        var value = event[metadataKey];
+        if (value !== undefined || metadataKey in event) {
+            copy[metadataKey] = value;
+        }
+    }
+    if ("data" in event) {
+        copy.data = event.data;
+    }
+    if (!copy.kind) {
+        copy.kind = kinds.Event;
+    }
+    return copy as EventRecord;
 }
 
 function withThenable<T>(value: T, callback: (value: any) => unknown): unknown {
@@ -2341,14 +2763,18 @@ export class Queue {
     back: Array<EventRecord | undefined> = [];
     backHead = 0;
     private fifo?: QueueShape;
+    private context: Context;
 
-    constructor(fifo?: QueueShape) {
-        this.fifo = fifo;
+    constructor(fifo?: QueueShape, context?: Context) {
+        this.fifo = validateQueueShape(fifo);
+        this.context = context || new Context();
     }
 
     len(): number | unknown {
         if (this.fifo) {
-            const lenOrError = this.fifo.len();
+            const lenOrError = "Len" in this.fifo
+                ? this.fifo.Len(this.context)
+                : this.fifo.len();
             return typeof lenOrError === "number" ? this.front.length + lenOrError : lenOrError;
         }
         return this.front.length + (this.back.length - this.backHead);
@@ -2359,7 +2785,9 @@ export class Queue {
         if (this.front.length > 0) {
             event = this.front.pop() as Event | undefined; // O(1) for completion events
         } else if (this.fifo) {
-            event = this.fifo.pop();
+            event = "Pop" in this.fifo
+                ? this.fifo.Pop(this.context)
+                : this.fifo.pop();
         } else if (this.backHead < this.back.length) {
             event = this.back[this.backHead];
             this.back[this.backHead] = undefined; // Help GC
@@ -2378,7 +2806,9 @@ export class Queue {
         if (isKind(event.kind, kinds.CompletionEvent)) {
             this.front.push(event);
         } else if (this.fifo) {
-            return this.fifo.push(event);
+            return "Push" in this.fifo
+                ? this.fifo.Push(this.context, event)
+                : this.fifo.push(event);
         } else {
             this.back.push(event);
         }
@@ -2522,24 +2952,24 @@ var EMPTY_PATH = {
 
 interface Instance {
     _hsm: HSM | null;
-    dispatch(event: EventRecord): void;
+    dispatch(event: EventRecord): Completion;
     state(): string;
     context(): Context;
     clock(): Required<ClockConfig>;
     get(name: string): unknown;
-    set(name: string, value: unknown): void;
+    set(name: string, value: unknown): Completion;
     call(name: string, ...args: unknown[]): unknown;
     restart(data?: unknown): void;
     takeSnapshot(): Snapshot;
 }
 
 class InstanceImpl {
-    dispatch(event: EventRecord): void {
+    dispatch(event: EventRecord): Completion {
         var runtime = runtimeFor(this);
         if (!runtime) {
-            return;
+            return Promise.resolve();
         }
-        runtime.dispatch(event);
+        return runtime.dispatch(event);
     }
 
     state(): string {
@@ -2562,11 +2992,12 @@ class InstanceImpl {
         return runtime ? runtime.get(name) : undefined;
     }
 
-    set(name: string, value: unknown): void {
+    set(name: string, value: unknown): Completion {
         var runtime = runtimeFor(this);
         if (runtime) {
-            runtime.set(name, value);
+            return runtime.set(name, value);
         }
+        return Promise.resolve();
     }
 
     call(name: string, ...args: unknown[]): unknown {
@@ -2588,14 +3019,7 @@ class InstanceImpl {
         var runtime = runtimeFor(this);
         return runtime
             ? runtime.takeSnapshot()
-            : {
-                  id: "",
-                  qualifiedName: "",
-                  state: "",
-                  attributes: {},
-                  queueLen: 0,
-                  events: [],
-              };
+            : makeSnapshot("", "", "", freezeSnapshotObject({}), 0, freezeSnapshotEvents([]));
     }
 }
 
@@ -2650,15 +3074,20 @@ class HSM {
             ctxOrInstance = new Context();
         }
 
-        const id = ((maybeConfig ? maybeConfig.id : "") || HSM.id++).toString();
+        const runtimeID = configID(maybeConfig);
+        const runtimeName = configName(maybeConfig);
+        const runtimeClock = configClock(maybeConfig);
+        const runtimeQueue = configQueue(maybeConfig);
+
+        const id = (runtimeID || HSM.id++).toString();
         const name =
-            (maybeConfig ? maybeConfig.name : "") || (maybeModelOrConfig as Model).qualifiedName;
+            runtimeName || (maybeModelOrConfig as Model).qualifiedName;
 
         this.instance = instanceOrModel as Instance;
         this.ctx = ctxOrInstance as Context;
         this.model = maybeModelOrConfig as Model;
         this.currentState = this.model;
-        this.queue = new Queue(maybeConfig?.queue);
+        this.queue = new Queue(runtimeQueue, this.ctx);
         this.active = {};
         this.processing = false;
         this.id = id;
@@ -2674,15 +3103,15 @@ class HSM {
             executed: {},
         };
         this.clock = {
-            setTimeout: maybeConfig?.clock?.setTimeout || DefaultClock.setTimeout,
-            clearTimeout: maybeConfig?.clock?.clearTimeout || DefaultClock.clearTimeout,
-            now: (maybeConfig?.clock?.now) || DefaultClock.now,
+            setTimeout: runtimeClock?.setTimeout || DefaultClock.setTimeout,
+            clearTimeout: runtimeClock?.clearTimeout || DefaultClock.clearTimeout,
+            now: runtimeClock?.now || DefaultClock.now,
         };
-        this.startData = maybeConfig ? maybeConfig.data : undefined;
+        this.startData = configData(maybeConfig);
 
         this.runtime = {
             dispatch: (event) => {
-                this.dispatch(event);
+                return this.dispatch(event);
             },
             state: () => {
                 return this.state();
@@ -2695,7 +3124,7 @@ class HSM {
                 return this.get(name);
             },
             set: (name, value) => {
-                this.set(name, value);
+                return this.set(name, value);
             },
             invoke: (name, ctx, args) => {
                 return this.invoke(name, ctx, args);
@@ -2774,16 +3203,28 @@ class HSM {
     }
 
     private get(name: string): unknown {
-        return this.attributes[qualifyModelName(this.model, name)];
+        return cloneRuntimeValue(this.attributes[qualifyModelName(this.model, name)]);
     }
 
-    private set(name: string, value: unknown): void {
+    private set(name: string, value: unknown): Completion {
         var qualifiedName = qualifyModelName(this.model, name);
+        var attribute = this.model.attributes
+            ? this.model.attributes[qualifiedName]
+            : undefined;
+        if (!attribute) {
+            return Promise.resolve();
+        }
+        if (attribute.hasDefault && !matchesDefaultRuntimeType(attribute.defaultValue, value)) {
+            return Promise.resolve();
+        }
+        if (attribute.hasType && !matchesRuntimeTypeToken(attribute.valueType, value)) {
+            return Promise.resolve();
+        }
         var hadValue = Object.prototype.hasOwnProperty.call(this.attributes, qualifiedName);
         var old = this.attributes[qualifiedName];
         this.attributes[qualifiedName] = value;
-        if (hadValue && old === value) {
-            return;
+        if (hadValue && Object.is(old, value)) {
+            return Promise.resolve();
         }
         var event = {
             kind: kinds.ChangeEvent,
@@ -2795,7 +3236,7 @@ class HSM {
                 new: value,
             },
         };
-        this.dispatch(event);
+        return this.dispatch(event);
     }
 
     private call(name: string, ...args: unknown[]): unknown {
@@ -2851,7 +3292,7 @@ class HSM {
     }
 
     private takeSnapshot(): Snapshot {
-        var events: Snapshot["events"] = [];
+        var events: SnapshotEvent[] = [];
         var currentStateName = this.currentState
             ? this.currentState.qualifiedName
             : this.model.qualifiedName;
@@ -2860,24 +3301,30 @@ class HSM {
         for (var eventName in transitionsByEvent) {
             var transitionList = transitionsByEvent[eventName];
             for (var i = 0; i < transitionList.length; i++) {
+                var schema = this.model.events[eventName]
+                    ? this.model.events[eventName].schema
+                    : undefined;
                 events.push({
                     event: eventName,
+                    Name: eventName,
+                    Kind: kinds.Event,
                     target: transitionList[i].target,
+                    Target: transitionList[i].target,
                     guard: !!transitionList[i].guard,
-                    schema: this.model.events[eventName]
-                        ? this.model.events[eventName].schema
-                        : undefined,
+                    Guard: !!transitionList[i].guard,
+                    schema,
+                    Schema: schema,
                 });
             }
         }
-        return {
-            id: this.id,
-            qualifiedName: this.model.qualifiedName,
-            state: currentStateName,
-            attributes: Object.assign({}, this.attributes),
-            queueLen: this.len(),
-            events: events,
-        };
+        return makeSnapshot(
+            this.id,
+            this.name,
+            currentStateName,
+            snapshotAttributes(this.attributes),
+            this.len(),
+            freezeSnapshotEvents(events),
+        );
     }
 
     private recordHistory(stateName: string | undefined): void {
@@ -2921,24 +3368,23 @@ class HSM {
 	        return undefined;
 	    }
 
-    dispatch(event: EventRecord): void {
-        if (!event.kind) {
-            event.kind = kinds.Event;
-        }
-        this.push(event);
-        this.notify("dispatched", event.name);
+    dispatch(event: EventRecord): Completion {
+        var dispatchEvent = cloneEventForDispatch(event);
+        this.push(dispatchEvent);
+        this.notify("dispatched", dispatchEvent.name);
 
         if (this.processing) {
-            return;
+            return Promise.resolve();
         }
         if (
             this.currentState.qualifiedName === this.model.qualifiedName &&
             this.ctx.done
         ) {
-            return;
+            return Promise.resolve();
         }
         this.processing = true;
         this.process();
+        return Promise.resolve();
     }
 
     private process(): void {
@@ -3434,6 +3880,7 @@ export function state<
     name: Name,
     ...partials: BuilderTuple<ValidateStateLocalSpecs<Parts>>
 ) {
+    validateNameNoSlash("State", name);
     return attachSpec(
         function (model: Model, stack: AnyModelElement[]): State {
             var namespace =
@@ -4041,11 +4488,32 @@ export function guard(
 }
 
 
+export function attribute<Name extends string, TypeToken extends Function>(
+    name: Name,
+    type: TypeToken,
+): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, AttributeValueFromTypeToken<TypeToken>>>;
+export function attribute<Name extends string, TypeToken extends Function, Value extends AttributeValueFromTypeToken<TypeToken>>(
+    name: Name,
+    type: TypeToken,
+    defaultValue: Value,
+): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, AttributeValueFromTypeToken<TypeToken>>>;
 export function attribute<Name extends string, Value = unknown>(
     name: Name,
+    defaultValue?: Value,
+): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, Value>>;
+export function attribute<Name extends string, Value = unknown>(
+    name: Name,
+    typeOrDefault?: Value | Function,
     maybeDefault?: Value,
 ): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, Value>> {
-    var hasDefault = arguments.length > 1;
+    validateNameNoSlash("Attribute", name);
+    var hasType = isRuntimeTypeToken(typeOrDefault);
+    var valueType = hasType ? typeOrDefault : undefined;
+    var hasDefault = hasType ? arguments.length > 2 : arguments.length > 1;
+    var defaultValue = hasType ? maybeDefault : typeOrDefault;
+    if (hasType && hasDefault && !matchesRuntimeTypeToken(valueType, defaultValue)) {
+        throw new TypeError("Attribute default value does not match declared type");
+    }
     return attachSpec(
         function (model: Model): unknown {
             var qualifiedName = qualifyModelName(model, name);
@@ -4053,14 +4521,16 @@ export function attribute<Name extends string, Value = unknown>(
                 name: name,
                 qualifiedName: qualifiedName,
                 hasDefault: hasDefault,
-                defaultValue: maybeDefault
+                defaultValue: defaultValue,
+                hasType: hasType,
+                valueType: valueType,
             };
             return undefined;
         },
         {
             kind: 'attribute',
             name,
-            value: maybeDefault as Value,
+            value: defaultValue as Value,
         } as AttributeSpec<Name, Value>,
     );
 }
@@ -4076,6 +4546,7 @@ export function operation<
     (model: Model) => unknown,
     OperationSpec<Name, Extract<Fn, (...args: any[]) => any>>
 > {
+    validateNameNoSlash("Operation", name);
     return attachSpec(
         function (model: Model): unknown {
             var qualifiedName = qualifyModelName(model, name);
@@ -4361,6 +4832,7 @@ export function defer<
 export function final<Name extends string>(
     name: Name,
 ) {
+    validateNameNoSlash("Final", name);
     return attachSpec(
         function (model: Model, stack: AnyModelElement[]) {
             var parent = findState(stack);
@@ -4402,6 +4874,7 @@ export function shallowHistory(
     var name = '';
     if (typeof elementOrName === 'string') {
         name = elementOrName;
+        validateNameNoSlash("ShallowHistory", name);
     } else if (typeof elementOrName === 'function') {
         partials.unshift(elementOrName);
     }
@@ -4438,6 +4911,7 @@ export function deepHistory(
     var name = '';
     if (typeof elementOrName === 'string') {
         name = elementOrName;
+        validateNameNoSlash("DeepHistory", name);
     } else if (typeof elementOrName === 'function') {
         partials.unshift(elementOrName);
     }
@@ -4472,6 +4946,7 @@ export function choice(elementOrName: string | ((...args: unknown[]) => unknown)
     // If first argument is a string, it's the name of the choice pseudostate
     if (typeof elementOrName === 'string') {
         name = elementOrName;
+        validateNameNoSlash("Choice", name);
     } else if (typeof elementOrName === 'function') {
         // If it's a partial function, add it to the beginning of partials
         partials.unshift(elementOrName);
@@ -4523,11 +4998,13 @@ export function choice(elementOrName: string | ((...args: unknown[]) => unknown)
 }
 
 
-export function dispatchAll(ctx: Context, event: EventRecord): void {
+export function dispatchAll(ctx: Context, event: EventRecord): Completion {
+    var completions: Completion[] = [];
     for (var id in ctx.instances) {
         var instance = ctx.instances[id];
-        instance.dispatch(event);
+        completions.push(instance.dispatch(event));
     }
+    return Promise.all(completions).then(function () {});
 }
 
 
@@ -4560,6 +5037,7 @@ export function define(
     name: string,
     ...partials: Array<(model: Model, stack: AnyModelElement[]) => void>
 ) {
+    validateNameNoSlash("Model", name);
 
     var model: Model = {
         qualifiedName: join('/', name),
@@ -4610,16 +5088,18 @@ export function dispatchTo(
     ctx: Context,
     event: EventRecord,
     ...ids: string[]
-): void {
+): Completion {
     if (!ids.length) {
         return dispatchAll(ctx, event);
     }
+    var completions: Completion[] = [];
     for (var i = 0; i < ids.length; i++) {
         var instance = ctx.instances[ids[i]];
         if (instance) {
-            instance.dispatch(event);
+            completions.push(instance.dispatch(event));
         }
     }
+    return Promise.all(completions).then(function () {});
 }
 
 export function get(
@@ -4651,7 +5131,7 @@ export function set(
     maybeInstanceOrName: Instance | string,
     maybeNameOrValue: unknown,
     maybeValue?: unknown,
-) {
+): Completion {
     var instance = ctxOrInstance instanceof Context
         ? maybeInstanceOrName
         : ctxOrInstance;
@@ -4660,12 +5140,13 @@ export function set(
         : (maybeInstanceOrName as string);
     var value = ctxOrInstance instanceof Context ? maybeValue : maybeNameOrValue;
     if (!instance) {
-        return;
+        return Promise.resolve();
     }
     var runtime = runtimeFor(instance);
     if (runtime) {
-        runtime.set(name, value);
+        return runtime.set(name, value);
     }
+    return Promise.resolve();
 }
 
 export function call(
@@ -4702,14 +5183,7 @@ export function takeSnapshot(ctxOrInstance: Context | Instance, maybeInstance?: 
     var runtime = runtimeFor(instance);
     return runtime
         ? runtime.takeSnapshot()
-        : {
-            id: '',
-            qualifiedName: '',
-            state: '',
-            attributes: {},
-            queueLen: 0,
-            events: []
-        };
+        : makeSnapshot('', '', '', freezeSnapshotObject({}), 0, freezeSnapshotEvents([]));
 }
 
 export function afterProcess(
@@ -4810,7 +5284,7 @@ export function id(instance) {
 
 export function qualifiedName(instance) {
     var runtime = runtimeFor(instance);
-    return runtime ? runtime.model.qualifiedName : '';
+    return runtime ? runtime.name : '';
 }
 
 export function name(instance) {
@@ -4829,10 +5303,16 @@ export function clock(instance) {
 
 export class Group<Members extends readonly unknown[] = readonly Instance[]> {
     instances: Instance[] = [];
+    id = "";
     readonly __hsm_group_members?: Members;
 
     constructor(...instances: unknown[]) {
-        for (var i = 0; i < instances.length; i++) {
+        var start = 0;
+        if (typeof instances[0] === "string") {
+            this.id = instances[0];
+            start = 1;
+        }
+        for (var i = start; i < instances.length; i++) {
             var instance = instances[i];
             if (!instance) {
                 continue;
@@ -4847,19 +5327,23 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
         }
     }
 
-    dispatch(event: GroupEventUnion<Members>): void {
+    dispatch(event: GroupEventUnion<Members>): Completion {
+        var completions: Completion[] = [];
         for (var i = 0; i < this.instances.length; i++) {
-            this.instances[i].dispatch(event);
+            completions.push(this.instances[i].dispatch(event));
         }
+        return Promise.all(completions).then(function () {});
     }
 
     set<K extends SharedAttributeKeysOfGroupMembers<Members>>(
         name: K,
         value: SharedAttributeValueOfGroupMembers<Members, K>,
-    ): void {
+    ): Completion {
+        var completions: Completion[] = [];
         for (var i = 0; i < this.instances.length; i++) {
-            this.instances[i].set(name, value);
+            completions.push(this.instances[i].set(name, value));
         }
+        return Promise.all(completions).then(function () {});
     }
 
     call<K extends GroupOperationKeys<Members>>(
@@ -4887,7 +5371,7 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
     takeSnapshot(): GroupSnapshotOf<Members> {
         var members: Snapshot[] = [];
         var queueLen = 0;
-        var events: Snapshot['events'] = [];
+        var events: SnapshotEvent[] = [];
         var ids: string[] = [];
         var qualifiedNames: string[] = [];
         var states: string[] = [];
@@ -4902,15 +5386,17 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
                 events.push(snapshot.events[j]);
             }
         }
-        return {
-            id: ids.join(','),
-            qualifiedName: qualifiedNames.join(','),
-            state: states.join(' | '),
-            attributes: {},
+        return makeSnapshot(
+            this.id || ids.join(','),
+            qualifiedNames.join(','),
+            states.join(' | '),
+            freezeSnapshotObject({}),
             queueLen,
-            events,
-            members: members as GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>,
-        };
+            freezeSnapshotEvents(events),
+            {
+                members: freezeSnapshotObject(members) as GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>,
+            },
+        ) as GroupSnapshotOf<Members>;
     }
 
     clock(): ClockConfig {
@@ -4918,6 +5404,10 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
     }
 }
 
+export function makeGroup<const Members extends readonly unknown[]>(
+    groupID: string,
+    ...instances: Members
+): Group<FlattenGroupMembers<Members>>;
 export function makeGroup<const Members extends readonly unknown[]>(
     ...instances: Members
 ): Group<FlattenGroupMembers<Members>>;
