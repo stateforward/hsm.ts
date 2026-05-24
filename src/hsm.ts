@@ -165,9 +165,9 @@ type ClockConfig = {
 };
 
 type QueueShape = {
-  push: (event: EventRecord) => void;
-  pop: () => EventRecord | undefined;
-  len: () => number;
+  push: (event: EventRecord) => void | unknown;
+  pop: () => EventRecord | undefined | unknown;
+  len: () => number | unknown;
 };
 
 type StripLeadingSlash<S extends string> = S extends `/${infer Rest}` ? Rest : S;
@@ -2346,12 +2346,16 @@ export class Queue {
         this.fifo = fifo;
     }
 
-    len(): number {
-        return this.front.length + (this.fifo ? this.fifo.len() : this.back.length - this.backHead);
+    len(): number | unknown {
+        if (this.fifo) {
+            const lenOrError = this.fifo.len();
+            return typeof lenOrError === "number" ? this.front.length + lenOrError : lenOrError;
+        }
+        return this.front.length + (this.back.length - this.backHead);
     }
 
-    pop(): EventRecord | undefined {
-        var event: EventRecord | undefined;
+    pop(): EventRecord | undefined | unknown {
+        var event: EventRecord | undefined | unknown;
         if (this.front.length > 0) {
             event = this.front.pop() as Event | undefined; // O(1) for completion events
         } else if (this.fifo) {
@@ -2370,15 +2374,25 @@ export class Queue {
         return event;
     }
 
-    push(event: EventRecord): void {
+    push(event: EventRecord): void | unknown {
         if (isKind(event.kind, kinds.CompletionEvent)) {
             this.front.push(event);
         } else if (this.fifo) {
-            this.fifo.push(event);
+            return this.fifo.push(event);
         } else {
             this.back.push(event);
         }
     }
+}
+
+function isQueueError(value: unknown): boolean {
+    if (value === undefined || value === null) {
+        return false;
+    }
+    if (typeof value !== "object") {
+        return true;
+    }
+    return !("name" in value) || !("kind" in value);
 }
 
 
@@ -2861,7 +2875,7 @@ class HSM {
             qualifiedName: this.model.qualifiedName,
             state: currentStateName,
             attributes: Object.assign({}, this.attributes),
-            queueLen: this.queue.len(),
+            queueLen: this.len(),
             events: events,
         };
     }
@@ -2911,7 +2925,7 @@ class HSM {
         if (!event.kind) {
             event.kind = kinds.Event;
         }
-        this.queue.push(event);
+        this.push(event);
         this.notify("dispatched", event.name);
 
         if (this.processing) {
@@ -2928,9 +2942,9 @@ class HSM {
     }
 
     private process(): void {
-        var deferred = new Array(this.queue.len() + 1);
+        var deferred = new Array(this.len() + 1);
         var deferredCount = 0;
-        var event = this.queue.pop();
+        var event = this.pop();
 
         while (event) {
             var currentStateName = this.currentState.qualifiedName;
@@ -2940,7 +2954,7 @@ class HSM {
 
             if (isDeferred) {
                 deferred[deferredCount++] = event;
-                event = this.queue.pop();
+                event = this.pop();
                 continue;
             }
 
@@ -2974,7 +2988,7 @@ class HSM {
                     if (nextState.qualifiedName !== this.currentState.qualifiedName) {
                         this.currentState = nextState;
                         for (var j = 0; j < deferredCount; j++) {
-                            this.queue.push(deferred[j]);
+                            this.push(deferred[j]);
                         }
                         deferredCount = 0;
                     }
@@ -2983,15 +2997,43 @@ class HSM {
             }
 
             this.notify("processed", event.name);
-            event = this.queue.pop();
+            event = this.pop();
         }
 
         for (var i = 0; i < deferredCount; i++) {
-            this.queue.push(deferred[i]);
+            this.push(deferred[i]);
         }
 
         this.processing = false;
         this.notify("processed", "__next__");
+    }
+
+    private push(event: EventRecord): void {
+        const error = this.queue.push(event);
+        if (error && !isKind(event.kind, kinds.ErrorEvent)) {
+            this.queue.push(Object.create(ErrorEvent, { data: { value: error } }));
+        }
+    }
+
+    private pop(): EventRecord | undefined {
+        while (true) {
+            const eventOrError = this.queue.pop();
+            if (!isQueueError(eventOrError)) {
+                return eventOrError as EventRecord | undefined;
+            }
+            this.queue.push(Object.create(ErrorEvent, { data: { value: eventOrError } }));
+        }
+    }
+
+    private len(): number {
+        const lenOrError = this.queue.len();
+        if (typeof lenOrError === "number") {
+            return lenOrError;
+        }
+        if (lenOrError) {
+            this.queue.push(Object.create(ErrorEvent, { data: { value: lenOrError } }));
+        }
+        return 0;
     }
 
     private transition(
