@@ -110,6 +110,84 @@ test('Custom queue push error dispatches error event', async function () {
   assert.strictEqual(instance.data.errorEvent.data, queueError);
 });
 
+[
+  {
+    name: 'Push',
+    makeQueue: function () {
+      return {
+        push() { return Promise.resolve(); },
+        pop() { return undefined; },
+        len() { return 0; },
+      };
+    },
+    message: /Queue Push\/push must be synchronous/,
+  },
+  {
+    name: 'Pop',
+    makeQueue: function () {
+      const events = [];
+      let failed = false;
+      return {
+        push(event) { events.push(event); },
+        pop() {
+          if (!failed) {
+            failed = true;
+            return Promise.resolve(events.shift());
+          }
+          return events.shift();
+        },
+        len() { return events.length; },
+      };
+    },
+    message: /Queue Pop\/pop must be synchronous/,
+  },
+  {
+    name: 'Len',
+    makeQueue: function () {
+      const events = [];
+      let failed = false;
+      return {
+        push(event) { events.push(event); },
+        pop() { return events.shift(); },
+        len() {
+          if (!failed) {
+            failed = true;
+            return Promise.resolve(events.length);
+          }
+          return events.length;
+        },
+      };
+    },
+    message: /Queue Len\/len must be synchronous/,
+  },
+].forEach(function (scenario) {
+  test('Async custom queue ' + scenario.name + ' dispatches error event', async function () {
+    const instance = new ErrorInstance();
+    const model = hsm.define('AsyncQueue' + scenario.name + 'ErrorMachine',
+      hsm.initial(hsm.target('idle')),
+      hsm.state('idle',
+        hsm.transition(
+          hsm.on('hsm_error'),
+          hsm.target('../failed'),
+          hsm.effect(function (ctx, inst, event) {
+            inst.data.errorEvent = event;
+          })
+        )
+      ),
+      hsm.state('failed')
+    );
+
+    const ctx = new hsm.Context();
+    hsm.start(ctx, instance, model, { queue: scenario.makeQueue() as any });
+    instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+    await delay(20);
+
+    assert.strictEqual(instance.state(), '/AsyncQueue' + scenario.name + 'ErrorMachine/failed');
+    assert(instance.data.errorEvent.data instanceof TypeError);
+    assert.match(instance.data.errorEvent.data.message, scenario.message);
+  });
+});
+
 test('Error event handled at different hierarchy levels', async function () {
   const instance = new ErrorInstance();
 

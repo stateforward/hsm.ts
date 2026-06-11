@@ -27,6 +27,46 @@ const lowercaseQueue: hsm.QueueShape = {
   },
 };
 
+const asyncPushQueue: hsm.QueueShape = {
+  // @ts-expect-error Queue push hooks must be synchronous.
+  push(event) {
+    void event.name;
+    return Promise.resolve();
+  },
+  pop() {
+    return undefined;
+  },
+  len() {
+    return 0;
+  },
+};
+
+const asyncPopQueue: hsm.QueueShape = {
+  push(event) {
+    void event.name;
+  },
+  // @ts-expect-error Queue pop hooks must be synchronous.
+  pop() {
+    return Promise.resolve(undefined);
+  },
+  len() {
+    return 0;
+  },
+};
+
+const asyncLenQueue: hsm.QueueShape = {
+  push(event) {
+    void event.name;
+  },
+  pop() {
+    return undefined;
+  },
+  // @ts-expect-error Queue len hooks must be synchronous.
+  len() {
+    return Promise.resolve(0);
+  },
+};
+
 const canonicalConfig: hsm.Config = hsm.Config({
   ID: "alpha",
   Name: "/Configured",
@@ -57,3 +97,6 @@ const lowercaseConfig: hsm.Config = hsm.Config({
 void canonicalConfig;
 void positionalConfig;
 void lowercaseConfig;
+void asyncPushQueue;
+void asyncPopQueue;
+void asyncLenQueue;

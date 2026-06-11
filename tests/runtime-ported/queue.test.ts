@@ -108,6 +108,37 @@ test.describe('Queue', () => {
         );
     });
 
+    test('should reject promise-like custom queue hook results', () => {
+        const event = { kind: Kinds.Event, name: 'regular' };
+
+        const pushQueue = new Queue({
+            push() { return Promise.resolve(); },
+            pop() { return undefined; },
+            len() { return 0; },
+        } as any);
+        const pushError = pushQueue.push(event);
+        assert(pushError instanceof TypeError);
+        assert.match(pushError.message, /Push\/push must be synchronous/);
+
+        const popQueue = new Queue({
+            push() {},
+            pop() { return Promise.resolve(event); },
+            len() { return 1; },
+        } as any);
+        const popError = popQueue.pop();
+        assert(popError instanceof TypeError);
+        assert.match(popError.message, /Pop\/pop must be synchronous/);
+
+        const lenQueue = new Queue({
+            push() {},
+            pop() { return undefined; },
+            len() { return Promise.resolve(0); },
+        } as any);
+        const lenError = lenQueue.len();
+        assert(lenError instanceof TypeError);
+        assert.match(lenError.message, /Len\/len must be synchronous/);
+    });
+
     test('should handle mixed event types across sequential pushes', () => {
         const queue = new Queue();
         const event1 = { kind: Kinds.Event, name: 'event1' };

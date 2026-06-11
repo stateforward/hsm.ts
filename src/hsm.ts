@@ -193,15 +193,15 @@ type ClockConfig = {
 };
 
 type LowercaseQueueShape = {
-  push: (event: EventRecord) => void | unknown;
-  pop: () => EventRecord | undefined | unknown;
-  len: () => number | unknown;
+  push: (event: EventRecord) => void | Error;
+  pop: () => EventRecord | undefined | Error;
+  len: () => number | Error;
 };
 
 type CanonicalQueueShape = {
-  Push: (context: Context, event: EventRecord) => void | unknown;
-  Pop: (context: Context) => EventRecord | undefined | unknown;
-  Len: (context: Context) => number | unknown;
+  Push: (context: Context, event: EventRecord) => void | Error;
+  Pop: (context: Context) => EventRecord | undefined | Error;
+  Len: (context: Context) => number | Error;
 };
 
 type QueueShape = LowercaseQueueShape | CanonicalQueueShape;
@@ -2222,6 +2222,12 @@ function validateQueueShape(fifo: QueueShape | undefined): QueueShape | undefine
     throw new TypeError("Queue requires complete Push/Pop/Len or push/pop/len hooks");
 }
 
+function isThenable(value: unknown): boolean {
+    return value !== undefined && value !== null &&
+        (typeof value === "object" || typeof value === "function") &&
+        typeof (value as { then?: unknown }).then === "function";
+}
+
 function validateNameNoSlash(kind: string, name: string): void {
     if (name.indexOf("/") !== -1) {
         throw new TypeError(kind + ' name "' + name + '" cannot contain "/"');
@@ -2770,24 +2776,30 @@ export class Queue {
         this.context = context || new Context();
     }
 
-    len(): number | unknown {
+    len(): number | Error {
         if (this.fifo) {
             const lenOrError = "Len" in this.fifo
                 ? this.fifo.Len(this.context)
                 : this.fifo.len();
+            if (isThenable(lenOrError)) {
+                return new TypeError("Queue Len/len must be synchronous");
+            }
             return typeof lenOrError === "number" ? this.front.length + lenOrError : lenOrError;
         }
         return this.front.length + (this.back.length - this.backHead);
     }
 
-    pop(): EventRecord | undefined | unknown {
-        var event: EventRecord | undefined | unknown;
+    pop(): EventRecord | undefined | Error {
+        var event: EventRecord | undefined | Error;
         if (this.front.length > 0) {
             event = this.front.pop() as Event | undefined; // O(1) for completion events
         } else if (this.fifo) {
             event = "Pop" in this.fifo
                 ? this.fifo.Pop(this.context)
                 : this.fifo.pop();
+            if (isThenable(event)) {
+                event = new TypeError("Queue Pop/pop must be synchronous");
+            }
         } else if (this.backHead < this.back.length) {
             event = this.back[this.backHead];
             this.back[this.backHead] = undefined; // Help GC
@@ -2802,13 +2814,14 @@ export class Queue {
         return event;
     }
 
-    push(event: EventRecord): void | unknown {
+    push(event: EventRecord): void | Error {
         if (isKind(event.kind, kinds.CompletionEvent)) {
             this.front.push(event);
         } else if (this.fifo) {
-            return "Push" in this.fifo
+            const error = "Push" in this.fifo
                 ? this.fifo.Push(this.context, event)
                 : this.fifo.push(event);
+            return isThenable(error) ? new TypeError("Queue Push/push must be synchronous") : error;
         } else {
             this.back.push(event);
         }
