@@ -8,7 +8,7 @@ const model = hsm.define(
   hsm.operation("save", () => undefined),
   hsm.state(
     "idle",
-    hsm.defer("tick", "set:count", "call:save"),
+    hsm.defer("tick", "/DeferredTyping/count", "/DeferredTyping/save"),
     hsm.defer(dynamicEventName),
     hsm.transition(hsm.on("tick"), hsm.target(".")),
     hsm.transition(hsm.onSet("count"), hsm.target(".")),

@@ -32,25 +32,21 @@ test('Basic initial transition in top-level state', async function () {
         hsm.target('default'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('initial-effect');
-          return Promise.resolve();
         })
       ),
       hsm.entry(function (ctx, inst, event) {
         inst.logAction('container-entry');
-        return Promise.resolve();
       }),
 
       hsm.state('default',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('default-entry');
-          return Promise.resolve();
         })
       ),
 
       hsm.state('other',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('other-entry');
-          return Promise.resolve();
         })
       )
     )
@@ -82,12 +78,10 @@ test('Nested initial transitions - multiple levels deep', async function () {
         hsm.target('level2'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('level1-initial');
-          return Promise.resolve();
         })
       ),
       hsm.entry(function (ctx, inst, event) {
         inst.logAction('level1-entry');
-        return Promise.resolve();
       }),
 
       hsm.state('level2',
@@ -95,12 +89,10 @@ test('Nested initial transitions - multiple levels deep', async function () {
           hsm.target('level3'),
           hsm.effect(function (ctx, inst, event) {
             inst.logAction('level2-initial');
-            return Promise.resolve();
           })
         ),
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('level2-entry');
-          return Promise.resolve();
         }),
 
         hsm.state('level3',
@@ -108,18 +100,15 @@ test('Nested initial transitions - multiple levels deep', async function () {
             hsm.target('final'),
             hsm.effect(function (ctx, inst, event) {
               inst.logAction('level3-initial');
-              return Promise.resolve();
             })
           ),
           hsm.entry(function (ctx, inst, event) {
             inst.logAction('level3-entry');
-            return Promise.resolve();
           }),
 
           hsm.state('final',
             hsm.entry(function (ctx, inst, event) {
               inst.logAction('final-entry');
-              return Promise.resolve();
             })
           )
         )
@@ -161,22 +150,22 @@ test('Initial transitions with guards', async function () {
         hsm.target('parent/alternate'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('chose-alternate');
-          return Promise.resolve();
         })
       ),
       hsm.transition(
         hsm.target('parent/default'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('chose-default');
-          return Promise.resolve();
         })
       )
     ),
     hsm.state('parent',
+      hsm.initial(
+        hsm.target('default')
+      ),
       hsm.state('default',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('default-entry');
-          return Promise.resolve();
         })
       ),
 
@@ -225,35 +214,28 @@ test('Initial transition bypassed on direct entry', async function () {
       hsm.target('parent/default'),
       hsm.effect(function (ctx, inst, event) {
         inst.logAction('initial-transition-effect');
-        return Promise.resolve();
       })
     ),
     hsm.state('parent',
-
+      hsm.initial(
+        hsm.target('default')
+      ),
 
       hsm.state('default',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('default-entry');
-          return Promise.resolve();
         })
       ),
 
       hsm.state('specific',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('specific-entry');
-          return Promise.resolve();
         })
       ),
 
       hsm.transition(
         hsm.on('go-specific'),
         hsm.target('specific')
-      )
-    ),
-
-    hsm.state('external',
-      hsm.initial(
-        hsm.target('parent/specific') // Direct target to specific state
       )
     )
   );
@@ -288,26 +270,21 @@ test('Initial transitions triggered on re-entry', async function () {
         hsm.effect(function (ctx, inst, event) {
           inst.data.initialCount = (inst.data.initialCount || 0) + 1;
           inst.logAction('initial-' + inst.data.initialCount);
-          return Promise.resolve();
         })
       ),
       hsm.entry(function (ctx, inst, event) {
         inst.logAction('container-entry');
-        return Promise.resolve();
       }),
       hsm.exit(function (ctx, inst, event) {
         inst.logAction('container-exit');
-        return Promise.resolve();
       }),
 
       hsm.state('child',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('child-entry');
-          return Promise.resolve();
         }),
         hsm.exit(function (ctx, inst, event) {
           inst.logAction('child-exit');
-          return Promise.resolve();
         })
       ),
 
@@ -320,7 +297,6 @@ test('Initial transitions triggered on re-entry', async function () {
     hsm.state('outside',
       hsm.entry(function (ctx, inst, event) {
         inst.logAction('outside-entry');
-        return Promise.resolve();
       }),
       hsm.transition(
         hsm.on('return'),
@@ -362,20 +338,20 @@ test('Named initial pseudostates', async function () {
       hsm.target('multi/state1'),
       hsm.effect(function (ctx, inst, event) {
         inst.logAction('normal-start');
-        return Promise.resolve();
       })
     ),
     hsm.state('multi',
+      hsm.initial(
+        hsm.target('state1')
+      ),
       hsm.state('state1',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('state1-entry');
-          return Promise.resolve();
         })
       ),
       hsm.state('state2',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('state2-entry');
-          return Promise.resolve();
         })
       )
     )
@@ -402,23 +378,23 @@ test('Complex initial transition scenario', async function () {
       hsm.target('root/branch1')
     ),
     hsm.state('root',
+      hsm.initial(
+        hsm.target('branch1')
+      ),
       hsm.state('branch1',
         hsm.initial(
           hsm.target('leaf1'),
           hsm.effect(function (ctx, inst, event) {
             inst.logAction('branch1-initial');
-            return Promise.resolve();
           })
         ),
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('branch1-entry');
-          return Promise.resolve();
         }),
 
         hsm.state('leaf1',
           hsm.entry(function (ctx, inst, event) {
             inst.logAction('leaf1-entry');
-            return Promise.resolve();
           }),
           hsm.transition(
             hsm.on('switch'),
@@ -448,20 +424,17 @@ test('Complex initial transition scenario', async function () {
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('branch2-entry');
           inst.data.visited = true;
-          return Promise.resolve();
         }),
 
         hsm.state('leaf2a',
           hsm.entry(function (ctx, inst, event) {
             inst.logAction('leaf2a-entry');
-            return Promise.resolve();
           })
         ),
 
         hsm.state('leaf2b',
           hsm.entry(function (ctx, inst, event) {
             inst.logAction('leaf2b-entry');
-            return Promise.resolve();
           })
         )
       )
@@ -502,15 +475,16 @@ test('Initial transitions with event data passing', async function () {
         inst.logAction('initial-effect');
         inst.data.initialEventName = event.name;
         inst.data.initialEventKind = event.kind;
-        return Promise.resolve();
       })
     ),
     hsm.state('parent',
+      hsm.initial(
+        hsm.target('child')
+      ),
       hsm.state('child',
         hsm.entry(function (ctx, inst, event) {
           inst.logAction('child-entry');
           inst.data.childEventName = event.name;
-          return Promise.resolve();
         })
       )
     )
@@ -520,9 +494,9 @@ test('Initial transitions with event data passing', async function () {
   hsm.start(ctx, instance, model);
 
   // Initial event should be passed through
-  assert.strictEqual(instance.data.initialEventName, 'hsm_initial');
+  assert.strictEqual(instance.data.initialEventName, 'hsm/initial');
   assert.strictEqual(instance.data.initialEventKind, hsm.kinds.CompletionEvent);
-  assert.strictEqual(instance.data.childEventName, 'hsm_initial');
+  assert.strictEqual(instance.data.childEventName, 'hsm/initial');
 
   hsm.stop(instance);
 });

@@ -40,7 +40,7 @@ test('Error event from activity exception', async function () {
         throw new Error('Activity failed!');
       }),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.target('../error'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('error-caught');
@@ -91,7 +91,7 @@ test('Custom queue push error dispatches error event', async function () {
     hsm.initial(hsm.target('idle')),
     hsm.state('idle',
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.target('../failed'),
         hsm.effect(function (ctx, inst, event) {
           inst.data.errorEvent = event;
@@ -103,7 +103,7 @@ test('Custom queue push error dispatches error event', async function () {
 
   const ctx = new hsm.Context();
   hsm.start(ctx, instance, model, { queue: customQueue });
-  instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+  await instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
   await delay(20);
 
   assert.strictEqual(instance.state(), '/QueuePushErrorMachine/failed');
@@ -167,7 +167,7 @@ test('Custom queue push error dispatches error event', async function () {
       hsm.initial(hsm.target('idle')),
       hsm.state('idle',
         hsm.transition(
-          hsm.on('hsm_error'),
+          hsm.on('hsm/error'),
           hsm.target('../failed'),
           hsm.effect(function (ctx, inst, event) {
             inst.data.errorEvent = event;
@@ -179,7 +179,11 @@ test('Custom queue push error dispatches error event', async function () {
 
     const ctx = new hsm.Context();
     hsm.start(ctx, instance, model, { queue: scenario.makeQueue() as any });
-    instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+    if (scenario.name === 'Len') {
+      hsm.takeSnapshot(instance);
+    }
+    const completion = instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+    await completion;
     await delay(20);
 
     assert.strictEqual(instance.state(), '/AsyncQueue' + scenario.name + 'ErrorMachine/failed');
@@ -196,9 +200,10 @@ test('Error event handled at different hierarchy levels', async function () {
       hsm.target('parent/child')
     ),
     hsm.state('parent',
+      hsm.initial(hsm.target('child')),
       hsm.transition(
-        hsm.on('hsm_error'),
-        hsm.target('../parentError'),
+        hsm.on('hsm/error'),
+        hsm.target('parentError'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('parent-handled-error');
         })
@@ -210,7 +215,7 @@ test('Error event handled at different hierarchy levels', async function () {
           throw new Error('Child error');
         }),
         hsm.transition(
-          hsm.on('hsm_error'),
+          hsm.on('hsm/error'),
           hsm.target('../childError'),
           hsm.effect(function (ctx, inst, event) {
             inst.logAction('child-handled-error');
@@ -292,21 +297,20 @@ test('Error in entry action', async function () {
         hsm.target('../failing')
 
       ),
-
-    ),
-    hsm.state('failing',
-      hsm.entry(function (ctx, inst, event) {
-        inst.logAction('entry-about-to-fail');
-        throw new Error('Entry action failed!');
-      }),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.target('../recovered'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('recovered-from-entry-error');
           inst.data.errorSource = 'entry';
         })
       )
+    ),
+    hsm.state('failing',
+      hsm.entry(function (ctx, inst, event) {
+        inst.logAction('entry-about-to-fail');
+        throw new Error('Entry action failed!');
+      })
     ),
     hsm.state('recovered',
       hsm.entry(function (ctx, inst, event) {
@@ -349,7 +353,7 @@ test('Error in transition effect', async function () {
         })
       ),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.target('../errorHandler'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('handled-effect-error');
@@ -387,6 +391,118 @@ test('Error in transition effect', async function () {
   hsm.stop(instance);
 });
 
+test('Transition effect errors restore source activity liveness', async function () {
+  const instance = new hsm.Instance();
+  let starts = 0;
+  let cancels = 0;
+  const model = hsm.define('EffectErrorActivityLiveness',
+    hsm.initial(hsm.target('idle')),
+    hsm.state('idle',
+      hsm.activity(function (ctx) {
+        starts++;
+        ctx.addEventListener('done', function () {
+          cancels++;
+        });
+        return new Promise(function () {});
+      }),
+      hsm.transition(
+        hsm.on('go'),
+        hsm.effect(function () {
+          throw new Error('effect boom');
+        }),
+        hsm.target('../done')
+      )
+    ),
+    hsm.state('done')
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+
+  assert.strictEqual(instance.state(), '/EffectErrorActivityLiveness/idle');
+  assert.strictEqual(starts > cancels, true);
+  await hsm.stop(instance);
+  assert.strictEqual(starts, cancels);
+});
+
+test('Exit behavior errors restore source activity liveness', async function () {
+  const instance = new hsm.Instance();
+  let starts = 0;
+  let cancels = 0;
+  const model = hsm.define('ExitErrorActivityLiveness',
+    hsm.initial(hsm.target('idle')),
+    hsm.state('idle',
+      hsm.activity(function (ctx) {
+        starts++;
+        ctx.addEventListener('done', function () {
+          cancels++;
+        });
+        return new Promise(function () {});
+      }),
+      hsm.exit(function (_ctx, _inst, event) {
+        if (event.name === 'go') {
+          throw new Error('exit boom');
+        }
+      }),
+      hsm.transition(hsm.on('go'), hsm.target('../done'))
+    ),
+    hsm.state('done')
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+
+  assert.strictEqual(instance.state(), '/ExitErrorActivityLiveness/idle');
+  assert.strictEqual(starts > cancels, true);
+  await hsm.stop(instance);
+  assert.strictEqual(starts, cancels);
+});
+
+test('Target entry errors clean target activities and restore source activities', async function () {
+  const instance = new hsm.Instance();
+  let sourceStarts = 0;
+  let sourceCancels = 0;
+  let targetStarts = 0;
+  let targetCancels = 0;
+  const model = hsm.define('EntryErrorActivityReconcile',
+    hsm.initial(hsm.target('idle')),
+    hsm.state('idle',
+      hsm.activity(function (ctx) {
+        sourceStarts++;
+        ctx.addEventListener('done', function () {
+          sourceCancels++;
+        });
+        return new Promise(function () {});
+      }),
+      hsm.transition(hsm.on('go'), hsm.target('../target/child'))
+    ),
+    hsm.state('target',
+      hsm.activity(function (ctx) {
+        targetStarts++;
+        ctx.addEventListener('done', function () {
+          targetCancels++;
+        });
+        return new Promise(function () {});
+      }),
+      hsm.state('child',
+        hsm.entry(function () {
+          throw new Error('entry boom');
+        })
+      )
+    )
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await instance.dispatch({ name: 'go', kind: hsm.kinds.Event });
+
+  assert.strictEqual(instance.state(), '/EntryErrorActivityReconcile/idle');
+  assert.strictEqual(sourceStarts > sourceCancels, true);
+  assert.strictEqual(targetStarts, 1);
+  assert.strictEqual(targetCancels, 1);
+  await hsm.stop(instance);
+  assert.strictEqual(sourceStarts, sourceCancels);
+});
+
 test('Multiple error events in sequence', async function () {
   const instance = new ErrorInstance();
 
@@ -406,8 +522,7 @@ test('Multiple error events in sequence', async function () {
         }
       ),
       hsm.transition(
-        hsm.on('hsm_error'),
-        hsm.target('errorProne'), // Self transition
+        hsm.on('hsm/error'),
         hsm.effect(function (ctx, inst, event) {
           inst.data.errorCount = (inst.data.errorCount || 0) + 1;
           inst.logAction('error-' + inst.data.errorCount + '-handled');
@@ -446,8 +561,8 @@ test('Error event data structure', async function () {
         throw error;
       }),
       hsm.transition(
-        hsm.on('hsm_error'),
-        hsm.target('inspector'),
+        hsm.on('hsm/error'),
+        hsm.target('../inspector'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('inspecting-error');
           inst.data.errorEvent = event;
@@ -463,7 +578,7 @@ test('Error event data structure', async function () {
   // Wait for error event
   await delay(20);
 
-  assert.strictEqual(instance.data.errorEvent.name, 'hsm_error');
+  assert.strictEqual(instance.data.errorEvent.name, 'hsm/error');
   assert.strictEqual(instance.data.errorEvent.kind, hsm.kinds.ErrorEvent);
   assert.strictEqual(instance.data.errorEvent.data.message, 'Custom error message');
   assert.strictEqual(instance.data.errorEvent.data.code, 'CUSTOM_ERROR');
@@ -488,7 +603,7 @@ test('Error handling with guards', async function () {
         throw error;
       }),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.guard(function (ctx, inst, event) {
           return event.data.type === 'validation';
         }),
@@ -498,18 +613,17 @@ test('Error handling with guards', async function () {
         })
       ),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.guard(function (ctx, inst, event) {
           return event.data.type === 'network';
         }),
         hsm.target('../networkError'),
         hsm.effect(function (ctx, inst, event) {
-          console.log('network-error-path');
           inst.logAction('network-error-path');
         })
       ),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.target('../generalError'),
         hsm.effect(function (ctx, inst, event) {
           inst.logAction('general-error-path');

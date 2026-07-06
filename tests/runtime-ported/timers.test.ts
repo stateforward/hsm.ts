@@ -29,6 +29,28 @@ class TimerInstance extends hsm.Instance {
   }
 }
 
+function manualClock() {
+  const callbacks = [];
+  const canceled = [];
+  return {
+    callbacks,
+    canceled,
+    clock: {
+      setTimeout(callback) {
+        const id = callbacks.length;
+        callbacks.push(callback);
+        return id;
+      },
+      clearTimeout(id) {
+        canceled[id] = true;
+      },
+      now() {
+        return 0;
+      },
+    },
+  };
+}
+
 test('Basic after timer - fires once after delay', async function () {
   const instance = new TimerInstance();
 
@@ -71,6 +93,33 @@ test('Basic after timer - fires once after delay', async function () {
   assert.strictEqual(instance.state(), '/BasicAfterMachine/done');
 
   hsm.stop(instance);
+});
+
+test('Stale after timer callback after restart does not dispatch into new run', async function () {
+  const instance = new TimerInstance();
+  const controlled = manualClock();
+  const model = hsm.define('StaleAfterRestartMachine',
+    hsm.initial(
+      hsm.target('waiting')
+    ),
+    hsm.state('waiting',
+      hsm.transition(
+        hsm.after(function () { return 10; }),
+        hsm.target('../fired')
+      )
+    ),
+    hsm.state('fired')
+  );
+
+  hsm.start(new hsm.Context(), instance, model, { clock: controlled.clock });
+  const staleCallback = controlled.callbacks[0];
+
+  await hsm.restart(instance);
+  staleCallback();
+  await delay(0);
+
+  assert.strictEqual(instance.state(), '/StaleAfterRestartMachine/waiting');
+  await hsm.stop(instance);
 });
 
 test('After timer aborted on state exit', async function () {
@@ -116,6 +165,33 @@ test('After timer aborted on state exit', async function () {
   assert.strictEqual(instance.log.includes('timeout-fired'), false);
 
   hsm.stop(instance);
+});
+
+test('Stale at timer callback after restart does not dispatch into new run', async function () {
+  const instance = new TimerInstance();
+  const controlled = manualClock();
+  const model = hsm.define('StaleAtRestartMachine',
+    hsm.initial(
+      hsm.target('waiting')
+    ),
+    hsm.state('waiting',
+      hsm.transition(
+        hsm.at(function () { return 10; }),
+        hsm.target('../fired')
+      )
+    ),
+    hsm.state('fired')
+  );
+
+  hsm.start(new hsm.Context(), instance, model, { clock: controlled.clock });
+  const staleCallback = controlled.callbacks[0];
+
+  await hsm.restart(instance);
+  staleCallback();
+  await delay(0);
+
+  assert.strictEqual(instance.state(), '/StaleAtRestartMachine/waiting');
+  await hsm.stop(instance);
 });
 
 test('Basic every timer - fires repeatedly at intervals', async function () {
@@ -173,6 +249,36 @@ test('Basic every timer - fires repeatedly at intervals', async function () {
   hsm.stop(instance);
 });
 
+test('Every timer does not grow cancellation listeners on each tick', async function () {
+  let timerCtx;
+  const instance = new TimerInstance();
+
+  const model = hsm.define('EveryListenerGrowthMachine',
+    hsm.initial(
+      hsm.target('ticking')
+    ),
+    hsm.state('ticking',
+      hsm.transition(
+        hsm.every(function (ctx) {
+          timerCtx = ctx;
+          return 1;
+        }),
+        hsm.effect(function (ctx, inst) {
+          inst.data.tickCount++;
+        })
+      )
+    )
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await delay(35);
+
+  assert.strictEqual(instance.data.tickCount > 5, true);
+  assert.strictEqual(timerCtx.listeners.length <= 2, true);
+  await hsm.stop(instance);
+  assert.strictEqual(timerCtx.listeners.length <= 2, true);
+});
+
 test('Multiple timers in same state', async function () {
   const instance = new TimerInstance();
 
@@ -214,6 +320,41 @@ test('Multiple timers in same state', async function () {
   assert.strictEqual(instance.log.includes('timer2-fired'), false);
 
   hsm.stop(instance);
+});
+
+test('Failed after transition preserves sibling one-shot timers', async function () {
+  const instance = new TimerInstance();
+  const model = hsm.define('TimerSiblingRollbackMachine',
+    hsm.initial(
+      hsm.target('waiting')
+    ),
+    hsm.state('waiting',
+      hsm.transition(
+        hsm.after(function () { return 10; }),
+        hsm.effect(function (ctx, inst) {
+          inst.logAction('first-fired');
+          throw new Error('first failed');
+        }),
+        hsm.target('../failed')
+      ),
+      hsm.transition(
+        hsm.after(function () { return 40; }),
+        hsm.effect(function (ctx, inst) {
+          inst.logAction('second-fired');
+        }),
+        hsm.target('../done')
+      )
+    ),
+    hsm.state('failed'),
+    hsm.state('done')
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await delay(100);
+
+  assert.deepStrictEqual(instance.log, ['first-fired', 'second-fired']);
+  assert.strictEqual(instance.state(), '/TimerSiblingRollbackMachine/done');
+  await hsm.stop(instance);
 });
 
 test('Timer with dynamic duration based on instance data', async function () {
@@ -281,7 +422,7 @@ test('Timer with event data access', async function () {
   hsm.start(ctx, instance, model);
 
   // Timer function should receive initial event
-  assert.strictEqual(instance.data.timerEvent.name, 'hsm_initial');
+  assert.strictEqual(instance.data.timerEvent.name, 'hsm/initial');
 
   await delay(70);
   assert.strictEqual(instance.state(), '/EventDataTimerMachine/triggered');
@@ -311,12 +452,11 @@ test('Zero or negative timer duration', async function () {
   const ctx = new hsm.Context();
   hsm.start(ctx, instance, model);
 
-  // Should not create timer for zero duration
+  // Zero duration timers fire immediately.
   await delay(20);
 
-  // State should remain unchanged
-  assert.strictEqual(instance.state(), '/ZeroTimerMachine/immediate');
-  assert.strictEqual(instance.log.includes('immediate-timer'), false);
+  assert.strictEqual(instance.state(), '/ZeroTimerMachine/done');
+  assert.strictEqual(instance.log.includes('immediate-timer'), true);
 
   hsm.stop(instance);
 });
@@ -371,7 +511,6 @@ test('Every timer with abort signal handling', async function () {
       }),
       hsm.transition(
         hsm.every(function () { return 25; }),
-        hsm.target('active'), // Self transition
         hsm.effect(function (ctx, inst, event) {
           inst.data.tickCount++;
           inst.logAction('tick-' + inst.data.tickCount);

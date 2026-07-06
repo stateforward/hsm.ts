@@ -263,8 +263,11 @@ test('Event dispatching during state machine lifecycle', async function () {
   // Stop the state machine
   hsm.stop(instance);
 
-  // Events after stop should be ignored
-  instance.dispatch({ name: 'next', kind: hsm.kinds.Event });
+  // Direct dispatch after stop returns a failed completion.
+  await assert.rejects(
+    instance.dispatch({ name: 'next', kind: hsm.kinds.Event }),
+    /dispatch requires a started HSM/
+  );
   assert.strictEqual(instance.state(), '/EventLifecycleMachine'); // Root state after stop
 });
 

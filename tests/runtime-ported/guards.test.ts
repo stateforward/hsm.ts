@@ -33,9 +33,6 @@ test('Basic guard conditions - allow or block transitions', async function () {
       hsm.target('idle')
     ),
     hsm.state('idle',
-      hsm.initial(
-        hsm.target('idle')
-      ),
       hsm.transition(
         hsm.on('go'),
         hsm.guard(function (ctx, inst, event) {
@@ -43,13 +40,13 @@ test('Basic guard conditions - allow or block transitions', async function () {
         }),
         hsm.target('/active'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('transition-allowed'));
+          inst.logAction('transition-allowed');
         })
       )
     ),
     hsm.state('active',
       hsm.entry(function (ctx, inst, event) {
-        return Promise.resolve(inst.logAction('active-entry'));
+        inst.logAction('active-entry');
       })
     )
   );
@@ -93,7 +90,7 @@ test('Multiple transitions with different guards', async function () {
         }),
         hsm.target('/low'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('went-low'));
+          inst.logAction('went-low');
         })
       ),
       hsm.transition(
@@ -103,7 +100,7 @@ test('Multiple transitions with different guards', async function () {
         }),
         hsm.target('/medium'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('went-medium'));
+          inst.logAction('went-medium');
         })
       ),
       hsm.transition(
@@ -113,7 +110,7 @@ test('Multiple transitions with different guards', async function () {
         }),
         hsm.target('/high'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('went-high'));
+          inst.logAction('went-high');
         })
       )
     ),
@@ -170,7 +167,7 @@ test('Guards with event data access', async function () {
         }),
         hsm.target('/authorized'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('access-granted'));
+          inst.logAction('access-granted');
         })
       )
     ),
@@ -270,9 +267,9 @@ test('Guards in hierarchical states', async function () {
         hsm.guard(function (ctx, inst, event) {
           return inst.data.level === 'parent';
         }),
-        hsm.target('sibling'),
+        hsm.target('../sibling'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('parent-handled'));
+          inst.logAction('parent-handled');
         })
       ),
 
@@ -284,7 +281,7 @@ test('Guards in hierarchical states', async function () {
           }),
           hsm.target('../other'),
           hsm.effect(function (ctx, inst, event) {
-            return Promise.resolve(inst.logAction('child-handled'));
+            inst.logAction('child-handled');
           })
         )
       ),
@@ -317,7 +314,7 @@ test('Transition without guard (always enabled)', async function () {
         hsm.on('always'),
         hsm.target('/b'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('transition-executed'));
+          inst.logAction('transition-executed');
         })
       )
     ),
@@ -351,7 +348,7 @@ test('Guard exceptions are caught and treated as false', async function () {
         }),
         hsm.target('/danger'),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve(inst.logAction('should-not-execute'));
+          inst.logAction('should-not-execute');
         })
       ),
       hsm.transition(
@@ -370,10 +367,10 @@ test('Guard exceptions are caught and treated as false', async function () {
   const ctx = new hsm.Context();
   hsm.start(ctx, instance, model);
 
-  // Guard exception should be caught, transition skipped, fallback used
+  // Guard exceptions are reported through the error-event path and do not select fallback transitions.
   instance.dispatch({ name: 'error', kind: hsm.kinds.Event });
-  assert.strictEqual(instance.state(), '/GuardExceptionMachine/fallback');
-  assert.deepStrictEqual(instance.log, ['guard-throwing', 'fallback-guard']);
+  assert.strictEqual(instance.state(), '/GuardExceptionMachine/safe');
+  assert.deepStrictEqual(instance.log, ['guard-throwing']);
 
   hsm.stop(instance);
 });
@@ -388,7 +385,6 @@ test('Complex guard with state inspection', async function () {
     hsm.state('idle',
       hsm.entry(function (ctx, inst, event) {
         inst.data.visitCount = (inst.data.visitCount || 0) + 1;
-        return Promise.resolve();
       }),
       hsm.transition(
         hsm.on('check'),
@@ -412,7 +408,6 @@ test('Complex guard with state inspection', async function () {
     hsm.state('done',
       hsm.entry(function (ctx, inst, event) {
         inst.logAction('done-after-' + inst.data.visitCount + '-visits');
-        return Promise.resolve();
       })
     )
   );

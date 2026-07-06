@@ -35,8 +35,8 @@ const startedCounter: CounterInstance = started;
 const startedTyped = hsm.start(new CounterInstance(), model);
 const startedTypedCounter: CounterInstance = startedTyped;
 
-const count: number = started.get("count");
-const label: string = started.get("label");
+const [count]: hsm.AttributeRead<number> = started.get("count");
+const [label]: hsm.AttributeRead<string> = started.get("label");
 const tag: "counter" = started.tag();
 const machineInstanceTag: "counter" = startedTyped.tag();
 const explicitBehavior: hsm.BehaviorCallbackFor<CustomModel> = (

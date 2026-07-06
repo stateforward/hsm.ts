@@ -86,6 +86,115 @@ test('Basic activity - starts on entry, stops on exit', async function () {
   hsm.stop(instance);
 });
 
+test('Activity cancellation uses snapshot-safe context listeners', async function () {
+  const calls = [];
+  const model = hsm.define('ActivityCancellationListenerMutation',
+    hsm.initial(
+      hsm.target('active')
+    ),
+    hsm.state('active',
+      hsm.activity(function (ctx) {
+        function first() {
+          calls.push('first');
+          ctx.removeEventListener('done', first);
+        }
+        function second() {
+          calls.push('second');
+        }
+        ctx.addEventListener('done', first);
+        ctx.addEventListener('done', second);
+      })
+    )
+  );
+
+  const instance = hsm.start(new hsm.Context(), new hsm.Instance(), model);
+
+  await hsm.stop(instance);
+
+  assert.deepStrictEqual(calls, ['first', 'second']);
+});
+
+test('Stale activity rejection after restart does not dispatch into the new run', async function () {
+  const instance = new ActivityInstance();
+  let starts = 0;
+  const model = hsm.define('RestartStaleActivityError',
+    hsm.initial(
+      hsm.target('active')
+    ),
+    hsm.state('active',
+      hsm.activity(function (ctx) {
+        const run = ++starts;
+        if (run === 1) {
+          return new Promise(function (_resolve, reject) {
+            setTimeout(function () {
+              reject(new Error('old run failed'));
+            }, 20);
+          });
+        }
+        return new Promise(function (resolve) {
+          ctx.addEventListener('done', resolve);
+        });
+      }),
+      hsm.transition(
+        hsm.on('hsm/error'),
+        hsm.target('../errored')
+      )
+    ),
+    hsm.state('errored')
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await hsm.restart(instance);
+  await delay(60);
+
+  assert.strictEqual(instance.state(), '/RestartStaleActivityError/active');
+  assert.strictEqual(starts, 2);
+  await hsm.stop(instance);
+});
+
+test('Stale activity completion after restart does not notify new run waiters', async function () {
+  const instance = new hsm.Instance();
+  let starts = 0;
+  let resolveOld = function () {};
+  const model = hsm.define('RestartStaleActivityExecuted',
+    hsm.initial(
+      hsm.target('active')
+    ),
+    hsm.state('active',
+      hsm.activity(function (ctx) {
+        starts++;
+        if (starts === 1) {
+          return new Promise(function (resolve) {
+            resolveOld = resolve;
+          });
+        }
+        return new Promise(function (resolve) {
+          ctx.addEventListener('done', resolve);
+        });
+      })
+    )
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  const waitOld = hsm.afterExecuted(instance.context(), instance, '/RestartStaleActivityExecuted/active/activity_0');
+  await hsm.restart(instance);
+  resolveOld();
+
+  const result = await Promise.race([
+    waitOld.then(function () {
+      return 'resolved';
+    }),
+    delay(30).then(function () {
+      return 'pending';
+    })
+  ]);
+
+  assert.strictEqual(result, 'pending');
+  assert.strictEqual(instance.state(), '/RestartStaleActivityExecuted/active');
+  assert.strictEqual(starts, 2);
+  await hsm.stop(instance);
+});
+
 test('Multiple concurrent activities', async function () {
   const instance = new ActivityInstance();
 
@@ -178,14 +287,12 @@ test('Activity error handling', async function () {
         throw new Error('Activity error!');
       }),
       hsm.transition(
-        hsm.on('hsm_error'),
+        hsm.on('hsm/error'),
         hsm.target('/error'),
         hsm.effect(function (ctx, inst, event) {
-          console.log('error-handled', event);
           inst.logAction('error-handled');
           inst.data.errorData = event.data;
           errorEventReceived = true;
-          return Promise.resolve();
         })
       )
     ),
@@ -304,9 +411,9 @@ test('Activity with event data access', async function () {
   hsm.start(ctx, instance, model);
 
   // Activity should receive the initial event
-  assert.strictEqual(instance.data.activityEvent.name, 'hsm_initial');
+  assert.strictEqual(instance.data.activityEvent.name, 'hsm/initial');
   assert.strictEqual(instance.data.processedTrigger, 'test-value');
-  assert.deepStrictEqual(instance.log, ['activity-event-hsm_initial']);
+  assert.deepStrictEqual(instance.log, ['activity-event-hsm/initial']);
 
   hsm.stop(instance);
 });

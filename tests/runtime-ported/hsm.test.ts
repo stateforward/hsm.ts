@@ -128,10 +128,82 @@ test("Context should implement done functionality", function () {
   assert.strictEqual(context.listeners.indexOf(listener2), -1);
 });
 
+test("Context children created after parent cancellation are already done", function () {
+  var parent = new hsm.Context();
+  parent.cancel();
+
+  var child = parent.WithValue("k", "v");
+  var withCancel = parent.WithCancel()[0];
+
+  assert.strictEqual(parent.done, true);
+  assert.strictEqual(child.done, true);
+  assert.strictEqual(withCancel.done, true);
+  assert.strictEqual(parent.listeners.length, 0);
+});
+
+test("Started contexts stay canceled when parent is already canceled", function () {
+  var parent = new hsm.Context();
+  var activityDone;
+  var listenerCalled = false;
+  var model = hsm.define(
+    "CanceledStartContext",
+    hsm.state("active",
+      hsm.activity(function (ctx) {
+        activityDone = ctx.done;
+        ctx.addEventListener("done", function () {
+          listenerCalled = true;
+        });
+      })
+    ),
+    hsm.initial(hsm.target("active"))
+  );
+
+  parent.cancel();
+  var instance = hsm.start(parent, new hsm.Instance(), model);
+
+  assert.strictEqual(instance.context().done, true);
+  assert.strictEqual(activityDone, true);
+  assert.strictEqual(listenerCalled, true);
+});
+
+test("afterEntry waiters are scoped to the context passed at registration", async function () {
+  const model = hsm.define(
+    "StaleAfterEntry",
+    hsm.state(
+      "idle",
+      hsm.transition(hsm.on("go"), hsm.target("../done")),
+    ),
+    hsm.state("done"),
+    hsm.initial(hsm.target("idle")),
+  );
+  const instance = hsm.start(new hsm.Context(), new hsm.Instance(), model);
+  const oldContext = instance.context();
+  const oldWait = hsm.afterEntry(oldContext, instance, "/StaleAfterEntry/done").then(function () {
+    return "resolved";
+  });
+
+  await hsm.restart(instance);
+  await instance.dispatch({ name: "go", kind: hsm.kinds.Event });
+  const result = await Promise.race([
+    oldWait,
+    delay(30).then(function () {
+      return "pending";
+    }),
+  ]);
+
+  assert.strictEqual(oldContext.done, true);
+  assert.strictEqual(result, "pending");
+  await hsm.stop(instance);
+});
+
 test("Snapshots expose public runtime metadata", function () {
   // Profiler is no longer part of the TypeScript runtime surface.
   // Keeping this test as a contract check so queue state remains observable.
-  var snapshot = hsm.takeSnapshot(hsm.start(new hsm.Context(), new hsm.Instance(), hsm.define("ProfilerContract", hsm.state("idle"))));
+  var snapshot = hsm.takeSnapshot(hsm.start(new hsm.Context(), new hsm.Instance(), hsm.define(
+    "ProfilerContract",
+    hsm.state("idle"),
+    hsm.initial(hsm.target("idle"))
+  )));
   assert.strictEqual(snapshot.events.length >= 0, true);
 });
 
@@ -214,12 +286,15 @@ test("buildTransitionTable() should create optimized lookup tables", function ()
   assert.strictEqual(childTransitions["sharedEvent"][1].source, "/tableTest/parent");
 });
 
-test("Instance class should provide state machine interface", function () {
+test("Instance class should provide state machine interface", async function () {
   var instance = new hsm.Instance();
 
   // Test initial state (no HSM attached)
   assert.strictEqual(instance.state(), '');
-  instance.dispatch({ name: 'event', kind: hsm.kinds.Event }); // Should not throw
+  await assert.rejects(
+    instance.dispatch({ name: 'event', kind: hsm.kinds.Event }),
+    /dispatch requires a started HSM/
+  );
 
   // Test context getter without HSM
   var ctx = instance.context();
@@ -517,13 +592,13 @@ test("buildDeferredTable should create O(1) lookup tables", function () {
   // Check parent state deferred map
   var parentMap = model.deferredMap["/deferredTableTest/parent"];
   assert(parentMap);
-  assert.strictEqual(parentMap["parentEvent"], true);
+  assert.strictEqual(parentMap["parentEvent"], "/deferredTableTest/parent");
 
   // Check child state deferred map (should inherit parent deferred events)
   var childMap = model.deferredMap["/deferredTableTest/parent/child"];
   assert(childMap);
-  assert.strictEqual(childMap["childEvent1"], true);
-  assert.strictEqual(childMap["childEvent2"], true);
+  assert.strictEqual(childMap["childEvent1"], "/deferredTableTest/parent/child");
+  assert.strictEqual(childMap["childEvent2"], "/deferredTableTest/parent/child");
 });
 
 test("deferred events should be queued and reprocessed later", async function () {
@@ -535,7 +610,6 @@ test("deferred events should be queued and reprocessed later", async function ()
       hsm.defer("deferredEvent"),
       hsm.entry(function (ctx, inst, event) {
         inst.logEntry("Entered busy state");
-        return Promise.resolve();
       }),
       hsm.transition(
         hsm.on("finish"),
@@ -545,14 +619,12 @@ test("deferred events should be queued and reprocessed later", async function ()
     hsm.state("ready",
       hsm.entry(function (ctx, inst, event) {
         inst.logEntry("Entered ready state");
-        return Promise.resolve();
       }),
       hsm.transition(
         hsm.on("deferredEvent"),
         hsm.effect(function (ctx, inst, event) {
           processedEvents.push(event.name);
           inst.logEffect("Processed deferred event");
-          return Promise.resolve();
         }),
         hsm.target(".")
       )
@@ -719,9 +791,9 @@ test("deferred events with exact event names only (no wildcards)", function () {
 
   var deferredMap = model.deferredMap["/exactDeferredTest/working"];
   assert(deferredMap);
-  assert.strictEqual(deferredMap["exact.event.name"], true);
-  assert.strictEqual(deferredMap["another-event"], true);
-  assert.strictEqual(deferredMap["event123"], true);
+  assert.strictEqual(deferredMap["exact.event.name"], "/exactDeferredTest/working");
+  assert.strictEqual(deferredMap["another-event"], "/exactDeferredTest/working");
+  assert.strictEqual(deferredMap["event123"], "/exactDeferredTest/working");
 
   // Should not have wildcard patterns
   assert.strictEqual(deferredMap["__patterns__"], undefined);
@@ -782,41 +854,27 @@ test("HSM should handle guard expression errors", async function () {
     errorCaught = true;
   }
 
-  // The first transition with throwing guard should be skipped
-  // and the fallback transition should be taken
-  assert.strictEqual(instance.state(), "/guardError/c");
+  // Guard errors are reported through the error event path and do not select a fallback transition.
+  assert.strictEqual(instance.state(), "/guardError/a");
 });
 
 test("Choice without valid transition should throw", async function () {
-  var instance = new hsm.Instance();
-
-  var model = hsm.define("choiceError",
-    hsm.state("start",
-      hsm.transition(hsm.on("go"), hsm.target("../badChoice"))
-    ),
-    hsm.choice("badChoice",
-      hsm.transition(
-        hsm.guard(function (ctx, inst, event) { return false; }),
-        hsm.target("never")
-      )
-      // No default transition!
-    ),
-    hsm.state("never"),
-    hsm.initial(hsm.target("start"))
-  );
-
-  var ctx = new hsm.Context();
-  hsm.start(ctx, instance, model);
-
-  var errorThrown = false;
-  try {
-    instance.dispatch({ name: "go", kind: hsm.kinds.Event });
-  } catch (e) {
-    errorThrown = true;
-    assert(e.message.includes("No transition found"));
-  }
-
-  assert(errorThrown);
+  assert.throws(function () {
+    hsm.define("choiceError",
+      hsm.state("start",
+        hsm.transition(hsm.on("go"), hsm.target("../badChoice"))
+      ),
+      hsm.choice("badChoice",
+        hsm.transition(
+          hsm.guard(function (ctx, inst, event) { return false; }),
+          hsm.target("never")
+        )
+        // No default transition.
+      ),
+      hsm.state("never"),
+      hsm.initial(hsm.target("start"))
+    );
+  }, /choice_missing_fallback/);
 });
 
 // Define test events
@@ -824,17 +882,9 @@ var SomeEvent = "SomeEvent";
 
 // Placeholder behavior
 function noBehavior(ctx, inst, event) {
-  return Promise.resolve();
 }
 
-/**
- * @extends {hsm.Instance}
- */
-function SM() {
-  hsm.Instance.call(this);
-}
-SM.prototype = Object.create(hsm.Instance.prototype);
-SM.prototype.constructor = SM;
+class SM extends hsm.Instance {}
 
 var model = hsm.define(
   "test",
@@ -845,7 +895,6 @@ var model = hsm.define(
       hsm.on(SomeEvent),
       hsm.target("."),  // Self transition
       hsm.effect(function (ctx, sm, event) {
-        return Promise.resolve();
       })
     )
   ),
@@ -863,7 +912,7 @@ var model = hsm.define(
       hsm.on(SomeEvent),
       hsm.target("."),  // Self transition
       hsm.effect(function (ctx, sm, event) {
-        return sm.dispatch({ name: SomeEvent, kind: hsm.kinds.Event });
+        void sm.dispatch({ name: SomeEvent, kind: hsm.kinds.Event });
       })
     ),
     hsm.transition(
@@ -872,7 +921,7 @@ var model = hsm.define(
       }),
       hsm.target("."),  // Self transition
       hsm.effect(function (ctx, sm, event) {
-        return sm.dispatch({ name: SomeEvent, kind: hsm.kinds.Event });
+        void sm.dispatch({ name: SomeEvent, kind: hsm.kinds.Event });
       })
     ),
     hsm.transition(
@@ -881,40 +930,36 @@ var model = hsm.define(
       }),
       hsm.target("."),  // Self transition
       hsm.effect(function (ctx, sm, event) {
-        return sm.dispatch({ name: SomeEvent, kind: hsm.kinds.Event });
+        void sm.dispatch({ name: SomeEvent, kind: hsm.kinds.Event });
       })
     )
   ),
   hsm.initial(hsm.target("foo"))
 );
 
-/**
- * Test machine instance
- * @extends {hsm.Instance}
- */
-function TestMachine() {
-  hsm.Instance.call(this);
-  this.counter = 0;
-  this.entryLog = [];
-  this.exitLog = [];
-  this.effectLog = [];
-  this.activityStarted = false;
-  this.activityStopped = false;
+class TestMachine extends hsm.Instance {
+  constructor() {
+    super();
+    this.counter = 0;
+    this.entryLog = [];
+    this.exitLog = [];
+    this.effectLog = [];
+    this.activityStarted = false;
+    this.activityStopped = false;
+  }
+
+  logEntry(state) {
+    this.entryLog.push(state);
+  }
+
+  logExit(state) {
+    this.exitLog.push(state);
+  }
+
+  logEffect(event) {
+    this.effectLog.push(event);
+  }
 }
-TestMachine.prototype = Object.create(hsm.Instance.prototype);
-TestMachine.prototype.constructor = TestMachine;
-
-TestMachine.prototype.logEntry = function (state) {
-  this.entryLog.push(state);
-};
-
-TestMachine.prototype.logExit = function (state) {
-  this.exitLog.push(state);
-};
-
-TestMachine.prototype.logEffect = function (event) {
-  this.effectLog.push(event);
-};
 
 test("should create a simple state machine", function () {
   var model = hsm.define(
@@ -1000,7 +1045,7 @@ test("should support internal transitions", function () {
     hsm.state("a",
       hsm.transition(
         hsm.on("internal"),
-        hsm.effect(function (ctx, inst, event) { return Promise.resolve(); })
+        hsm.effect(function (ctx, inst, event) { })
       )
     ),
     hsm.initial(hsm.target("a"))
@@ -1017,16 +1062,16 @@ test("should execute entry and exit actions", async function () {
   var model = hsm.define(
     "behaviors",
     hsm.state("a",
-      hsm.entry(function (ctx, m, event) { m.logEntry("a"); return Promise.resolve(); }),
-      hsm.exit(function (ctx, m, event) { m.logExit("a"); return Promise.resolve(); }),
+      hsm.entry(function (ctx, m, event) { m.logEntry("a"); }),
+      hsm.exit(function (ctx, m, event) { m.logExit("a"); }),
       hsm.transition(
         hsm.on("go"),
         hsm.target("../b")
       )
     ),
     hsm.state("b",
-      hsm.entry(function (ctx, m, event) { m.logEntry("b"); return Promise.resolve(); }),
-      hsm.exit(function (ctx, m, event) { m.logExit("b"); return Promise.resolve(); })
+      hsm.entry(function (ctx, m, event) { m.logEntry("b"); }),
+      hsm.exit(function (ctx, m, event) { m.logExit("b"); })
     ),
     hsm.initial(hsm.target("a"))
   );
@@ -1048,7 +1093,7 @@ test("should execute transition effects", async function () {
       hsm.transition(
         hsm.on("go"),
         hsm.target("../b"),
-        hsm.effect(function (ctx, m, e) { m.logEffect(e.name); return Promise.resolve(); })
+        hsm.effect(function (ctx, m, e) { m.logEffect(e.name); })
       )
     ),
     hsm.state("b"),
@@ -1143,7 +1188,7 @@ test("should support final states", async function () {
   var model = hsm.define('FinalTest',
     hsm.state('process',
       hsm.state('working',
-        hsm.entry(function (ctx, inst, event) { inst.logEntry('Started working'); return Promise.resolve(); }),
+        hsm.entry(function (ctx, inst, event) { inst.logEntry('Started working'); }),
         hsm.transition(hsm.on('complete'), hsm.target('../done'))
       ),
       hsm.final('done'),  // Final state - no implicit completion events yet
@@ -1230,13 +1275,11 @@ test("should gracefully stop state machine and exit states", async function () {
     hsm.state('outer',
       hsm.exit(function (ctx, inst, event) {
         exitedStates.push('outer');
-        return Promise.resolve();
       }),
 
       hsm.state('inner',
         hsm.exit(function (ctx, inst, event) {
           exitedStates.push('inner');
-          return Promise.resolve();
         }),
 
         hsm.activity(function (ctx, inst, event) {
@@ -1276,8 +1319,11 @@ test("should gracefully stop state machine and exit states", async function () {
   // Verify exit order (inner first, then outer)
   assert.deepStrictEqual(exitedStates, ['inner', 'outer']);
 
-  // Events should be ignored after stop
-  instance.dispatch({ name: 'shouldBeIgnored', kind: hsm.kinds.Event });
+  // Direct dispatch after stop returns a failed completion.
+  await assert.rejects(
+    instance.dispatch({ name: 'shouldBeIgnored', kind: hsm.kinds.Event }),
+    /dispatch requires a started HSM/
+  );
   assert.strictEqual(instance.state(), '/StopTest');
 });
 
@@ -1382,7 +1428,7 @@ test("should support async guard conditions", async function () {
   machine.counter = 5;
 
   machine.dispatch({ name: "check", kind: hsm.kinds.Event });
-  assert.strictEqual(machine.state(), "/asyncGuards/passed");
+  assert.strictEqual(machine.state(), "/asyncGuards/checking");
 });
 
 
@@ -1473,7 +1519,7 @@ test("should support after() timer transitions", async function () {
     hsm.state("waiting",
       hsm.transition(
         hsm.after(function (ctx, inst, event) { return 50; }),
-        hsm.effect(function (ctx, m, event) { timerFired = true; return Promise.resolve(); }),
+        hsm.effect(function (ctx, m, event) { timerFired = true; }),
         hsm.target("../finished")
       )
     ),
@@ -1556,7 +1602,7 @@ test("should cancel timers on state exit", async function () {
     hsm.state("waiting",
       hsm.transition(
         hsm.after(function (ctx, inst, event) { return 100; }),
-        hsm.effect(function (ctx, inst, event) { timerFired = true; return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { timerFired = true; }),
         hsm.target("../timeout")
       ),
       hsm.transition(
@@ -1592,17 +1638,17 @@ test("should process events in order", async function () {
     hsm.state("processing",
       hsm.transition(
         hsm.on("event1"),
-        hsm.effect(function (ctx, inst, event) { processed.push("event1"); return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { processed.push("event1"); }),
         hsm.target(".")
       ),
       hsm.transition(
         hsm.on("event2"),
-        hsm.effect(function (ctx, inst, event) { processed.push("event2"); return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { processed.push("event2"); }),
         hsm.target(".")
       ),
       hsm.transition(
         hsm.on("event3"),
-        hsm.effect(function (ctx, inst, event) { processed.push("event3"); return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { processed.push("event3"); }),
         hsm.target(".")
       )
     ),
@@ -1631,12 +1677,12 @@ test("should prioritize completion events", async function () {
     hsm.state("processing",
       hsm.transition(
         hsm.on("regular"),
-        hsm.effect(function (ctx, inst, event) { processed.push("regular"); return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { processed.push("regular"); }),
         hsm.target(".")
       ),
       hsm.transition(
         hsm.on("completion"),
-        hsm.effect(function (ctx, inst, event) { processed.push("completion"); return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { processed.push("completion"); }),
         hsm.target(".")
       )
     ),
@@ -1753,20 +1799,20 @@ test("should handle external transitions correctly", async function () {
   var model = hsm.define(
     "external",
     hsm.state("parent",
-      hsm.exit(function (ctx, inst, event) { exitOrder.push("parent"); return Promise.resolve(); }),
-      hsm.entry(function (ctx, inst, event) { entryOrder.push("parent"); return Promise.resolve(); }),
+      hsm.exit(function (ctx, inst, event) { exitOrder.push("parent"); }),
+      hsm.entry(function (ctx, inst, event) { entryOrder.push("parent"); }),
 
       hsm.state("child1",
-        hsm.exit(function (ctx, inst, event) { exitOrder.push("child1"); return Promise.resolve(); }),
-        hsm.entry(function (ctx, inst, event) { entryOrder.push("child1"); return Promise.resolve(); }),
+        hsm.exit(function (ctx, inst, event) { exitOrder.push("child1"); }),
+        hsm.entry(function (ctx, inst, event) { entryOrder.push("child1"); }),
         hsm.transition(
           hsm.on("toChild2"),
           hsm.target("../child2")
         )
       ),
       hsm.state("child2",
-        hsm.exit(function (ctx, inst, event) { exitOrder.push("child2"); return Promise.resolve(); }),
-        hsm.entry(function (ctx, inst, event) { entryOrder.push("child2"); return Promise.resolve(); })
+        hsm.exit(function (ctx, inst, event) { exitOrder.push("child2"); }),
+        hsm.entry(function (ctx, inst, event) { entryOrder.push("child2"); })
       ),
       hsm.initial(hsm.target("child1"))
     ),
@@ -1791,24 +1837,24 @@ test("should handle local transitions correctly", async function () {
   var model = hsm.define(
     "local",
     hsm.state("grandparent",
-      hsm.exit(function (ctx, inst, event) { exitOrder.push("grandparent"); return Promise.resolve(); }),
-      hsm.entry(function (ctx, inst, event) { entryOrder.push("grandparent"); return Promise.resolve(); }),
+      hsm.exit(function (ctx, inst, event) { exitOrder.push("grandparent"); }),
+      hsm.entry(function (ctx, inst, event) { entryOrder.push("grandparent"); }),
 
       hsm.state("parent",
-        hsm.exit(function (ctx, inst, event) { exitOrder.push("parent"); return Promise.resolve(); }),
-        hsm.entry(function (ctx, inst, event) { entryOrder.push("parent"); return Promise.resolve(); }),
+        hsm.exit(function (ctx, inst, event) { exitOrder.push("parent"); }),
+        hsm.entry(function (ctx, inst, event) { entryOrder.push("parent"); }),
 
         hsm.state("child",
-          hsm.exit(function (ctx, inst, event) { exitOrder.push("child"); return Promise.resolve(); }),
-          hsm.entry(function (ctx, inst, event) { entryOrder.push("child"); return Promise.resolve(); }),
+          hsm.exit(function (ctx, inst, event) { exitOrder.push("child"); }),
+          hsm.entry(function (ctx, inst, event) { entryOrder.push("child"); }),
           hsm.transition(
             hsm.on("toGrandchild"),
             hsm.target("../grandchild")
           )
         ),
         hsm.state("grandchild",
-          hsm.exit(function (ctx, inst, event) { exitOrder.push("grandchild"); return Promise.resolve(); }),
-          hsm.entry(function (ctx, inst, event) { entryOrder.push("grandchild"); return Promise.resolve(); })
+          hsm.exit(function (ctx, inst, event) { exitOrder.push("grandchild"); }),
+          hsm.entry(function (ctx, inst, event) { entryOrder.push("grandchild"); })
         ),
         hsm.initial(hsm.target("child"))
       ),
@@ -1837,12 +1883,12 @@ test("should handle self transitions correctly", async function () {
   var model = hsm.define(
     "selfTransition",
     hsm.state("state",
-      hsm.exit(function (ctx, inst, event) { exitCount++; return Promise.resolve(); }),
-      hsm.entry(function (ctx, inst, event) { entryCount++; return Promise.resolve(); }),
+      hsm.exit(function (ctx, inst, event) { exitCount++; }),
+      hsm.entry(function (ctx, inst, event) { entryCount++; }),
       hsm.transition(
         hsm.on("self"),
         hsm.target("."),
-        hsm.effect(function (ctx, inst, event) { return Promise.resolve(); })
+        hsm.effect(function (ctx, inst, event) { })
       )
     ),
     hsm.initial(hsm.target("state"))
@@ -1870,7 +1916,7 @@ test("should handle unhandled events gracefully", async function () {
     hsm.state("limited",
       hsm.transition(
         hsm.on("handled"),
-        hsm.effect(function (ctx, inst, event) { handlerCalled = true; return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { handlerCalled = true; }),
         hsm.target(".")
       )
     ),
@@ -1903,13 +1949,13 @@ test("should handle event in deepest state first", async function () {
     hsm.state("parent",
       hsm.transition(
         hsm.on("test"),
-        hsm.effect(function (ctx, inst, event) { handledAt = "parent"; return Promise.resolve(); }),
+        hsm.effect(function (ctx, inst, event) { handledAt = "parent"; }),
         hsm.target(".")
       ),
       hsm.state("child",
         hsm.transition(
           hsm.on("test"),
-          hsm.effect(function (ctx, inst, event) { handledAt = "child"; return Promise.resolve(); }),
+          hsm.effect(function (ctx, inst, event) { handledAt = "child"; }),
           hsm.target(".")
         )
       ),
@@ -1935,11 +1981,11 @@ test("should handle complex state machine scenario", async function () {
   var model = hsm.define(
     "complex",
     hsm.state("system",
-      hsm.entry(function (ctx, inst, event) { log.push("system-entry"); return Promise.resolve(); }),
-      hsm.exit(function (ctx, inst, event) { log.push("system-exit"); return Promise.resolve(); }),
+      hsm.entry(function (ctx, inst, event) { log.push("system-entry"); }),
+      hsm.exit(function (ctx, inst, event) { log.push("system-exit"); }),
 
       hsm.state("initializing",
-        hsm.entry(function (ctx, inst, event) { log.push("init-entry"); return Promise.resolve(); }),
+        hsm.entry(function (ctx, inst, event) { log.push("init-entry"); }),
         hsm.activity(function (ctx, m, e) {
           log.push("init-activity-start");
           return new Promise(function (resolve) {
@@ -1959,10 +2005,10 @@ test("should handle complex state machine scenario", async function () {
       ),
 
       hsm.state("running",
-        hsm.entry(function (ctx, inst, event) { log.push("running-entry"); return Promise.resolve(); }),
+        hsm.entry(function (ctx, inst, event) { log.push("running-entry"); }),
 
         hsm.state("idle",
-          hsm.entry(function (ctx, inst, event) { log.push("idle-entry"); return Promise.resolve(); }),
+          hsm.entry(function (ctx, inst, event) { log.push("idle-entry"); }),
           hsm.transition(
             hsm.on("start"),
             hsm.target("../processing")
@@ -1970,7 +2016,7 @@ test("should handle complex state machine scenario", async function () {
         ),
 
         hsm.state("processing",
-          hsm.entry(function (ctx, inst, event) { log.push("processing-entry"); return Promise.resolve(); }),
+          hsm.entry(function (ctx, inst, event) { log.push("processing-entry"); }),
           hsm.activity(function (ctx, m, e) {
             log.push("processing-activity");
             return new Promise(function (resolve) {
@@ -1991,7 +2037,7 @@ test("should handle complex state machine scenario", async function () {
       ),
 
       hsm.state("error",
-        hsm.entry(function (ctx, inst, event) { log.push("error-entry"); return Promise.resolve(); }),
+        hsm.entry(function (ctx, inst, event) { log.push("error-entry"); }),
         hsm.transition(
           hsm.on("reset"),
           hsm.target("../running")
@@ -2112,7 +2158,6 @@ test("should recover from behavior errors", async function () {
       hsm.transition(
         hsm.on("causeError"),
         hsm.effect(function (ctx, inst, event) {
-          return Promise.resolve();
         }),
         hsm.target("../recovery")
       )
@@ -2120,7 +2165,6 @@ test("should recover from behavior errors", async function () {
     hsm.state("recovery",
       hsm.entry(function (ctx, inst, event) {
         recoveryCount++;
-        return Promise.resolve();
       })
     ),
     hsm.initial(hsm.target("normal"))
@@ -2150,9 +2194,9 @@ test("should handle stack overflow conditions gracefully", async function () {
           maxDepth = Math.max(maxDepth, depth);
 
           if (depth < 1000) { // Prevent infinite recursion
-            return m.dispatch({ name: "recurse", kind: hsm.kinds.Event });
+            void m.dispatch({ name: "recurse", kind: hsm.kinds.Event });
           } else {
-            return m.dispatch({ name: "stop", kind: hsm.kinds.Event });
+            void m.dispatch({ name: "stop", kind: hsm.kinds.Event });
           }
         }),
         hsm.target(".")
@@ -2161,7 +2205,6 @@ test("should handle stack overflow conditions gracefully", async function () {
         hsm.on("stop"),
         hsm.effect(function (ctx, inst, event) {
           depth = 0;
-          return Promise.resolve();
         }),
         hsm.target("../stopped")
       )
@@ -2211,11 +2254,9 @@ test("should clean up resources on forced termination", async function () {
     hsm.state("allocating",
       hsm.entry(function (ctx, m, event) {
         m.resource1 = createResource("entry");
-        return Promise.resolve();
       }),
       hsm.exit(function (ctx, m, event) {
         if (m.resource1) destroyResource(m.resource1);
-        return Promise.resolve();
       }),
       hsm.activity(function (ctx, m, e) {
         var resource = createResource("activity");
@@ -2233,7 +2274,6 @@ test("should clean up resources on forced termination", async function () {
         hsm.effect(function (ctx, m, event) {
           var resource = createResource("timer");
           // Intentionally not cleaning up to test leak detection
-          return Promise.resolve();
         }),
         hsm.target(".")
       )
@@ -2272,7 +2312,6 @@ test("every() should work correctly with internal transitions", async function (
         hsm.effect(function (ctx, inst, event) {
           timer1Count++;
           effectCount++;
-          return Promise.resolve();
         })
         // No target - this is an internal transition!
       ),
@@ -2281,7 +2320,6 @@ test("every() should work correctly with internal transitions", async function (
         hsm.effect(function (ctx, inst, event) {
           timer2Count++;
           effectCount++;
-          return Promise.resolve();
         })
         // No target - this is an internal transition!
       ),

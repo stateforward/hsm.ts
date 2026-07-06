@@ -96,7 +96,7 @@ test('Basic deferred event - held and processed later', async function () {
 });
 
 test('Deferred events still flow through context and groups', async function () {
-  const ctx = new hsm.Context();
+  const ctx = new hsm.Context().WithValue(hsm.Keys.Instances, {});
   const first = new DeferredInstance();
   const second = new DeferredInstance();
   const model = hsm.define('DeferredResultAggregateMachine',
@@ -207,6 +207,9 @@ test('Deferred events in hierarchical states', async function () {
       hsm.target('active/connecting')
     ),
     hsm.state('active',
+      hsm.initial(
+        hsm.target('connecting')
+      ),
       hsm.state('connecting',
         hsm.defer('send'),
         hsm.transition(
@@ -216,6 +219,9 @@ test('Deferred events in hierarchical states', async function () {
       ),
       hsm.state(
         'connected',
+        hsm.initial(
+          hsm.target('idle')
+        ),
         hsm.state(
           "idle",
           hsm.transition(
@@ -241,7 +247,6 @@ test('Deferred events in hierarchical states', async function () {
     ),
     hsm.state('disconnected')
   );
-  console.log('model', model.deferredMap);
   const ctx = new hsm.Context();
   hsm.start(ctx, instance, model);
   assert.strictEqual(instance.state(), '/HierarchicalDeferredMachine/active/connecting');

@@ -193,23 +193,23 @@ typedStarted.dispatch({ kind: Tick.kind, name: "tick", data: { step: "1" } });
 typedStarted.dispatch({ kind: Tick.kind, name: "missing" });
 helperStarted.dispatch({
   kind: Tick.kind,
-  name: "set:count",
+  name: "/HelperEvents/count",
   data: { name: "count", old: 0, new: 1 },
 });
 helperStarted.dispatch({
   kind: Tick.kind,
-  name: "call:multiply",
+  name: "/HelperEvents/multiply",
   data: { name: "multiply", args: [1, 2] },
 });
 helperStarted.dispatch({
   kind: Tick.kind,
-  name: "set:count",
+  name: "/HelperEvents/count",
   // @ts-expect-error synthetic payloads follow the selected event name
   data: { name: "count", old: "0", new: 1 },
 });
 helperStarted.dispatch({
   kind: Tick.kind,
-  name: "call:multiply",
+  name: "/HelperEvents/multiply",
   // @ts-expect-error operation argument payloads are typed
   data: { name: "multiply", args: [1, "2"] },
 });
@@ -226,15 +226,15 @@ const tickDispatchEvent: hsm.DispatchEventOfName<typeof model, "tick"> = {
 const dispatchEventUnion: hsm.DispatchEventsOf<typeof model> = tickDispatchEvent;
 const tickEvent: hsm.Event<"tick", { step: number }> =
   null as any as hsm.EventOfName<typeof model, "tick">;
-const setCountEvent: hsm.Event<"set:count"> =
-  null as any as hsm.EventOfName<typeof helperModel, "set:count">;
+const setCountEvent: hsm.Event<"/HelperEvents/count"> =
+  null as any as hsm.EventOfName<typeof helperModel, "/HelperEvents/count">;
 const setCountEventSchema: {
   name: "count";
   old: number;
   new: number;
 } =
   null as any as NonNullable<
-    hsm.EventOfName<typeof helperModel, "set:count">["schema"]
+    hsm.EventOfName<typeof helperModel, "/HelperEvents/count">["schema"]
   >;
 const setLabelEventSchema: {
   name: "label";
@@ -242,26 +242,26 @@ const setLabelEventSchema: {
   new: string;
 } =
   null as any as NonNullable<
-    hsm.EventOfName<typeof helperModel, "set:label">["schema"]
+    hsm.EventOfName<typeof helperModel, "/HelperEvents/label">["schema"]
   >;
-const callSaveEvent: hsm.Event<"call:save"> =
-  null as any as hsm.EventOfName<typeof helperModel, "call:save">;
+const callSaveEvent: hsm.Event<"/HelperEvents/save"> =
+  null as any as hsm.EventOfName<typeof helperModel, "/HelperEvents/save">;
 const callSaveEventSchema: {
   name: "save";
   args: [];
 } =
   null as any as NonNullable<
-    hsm.EventOfName<typeof helperModel, "call:save">["schema"]
+    hsm.EventOfName<typeof helperModel, "/HelperEvents/save">["schema"]
   >;
 const callMultiplyEventSchema: {
   name: "multiply";
   args: [number, number];
 } =
   null as any as NonNullable<
-    hsm.EventOfName<typeof helperModel, "call:multiply">["schema"]
+    hsm.EventOfName<typeof helperModel, "/HelperEvents/multiply">["schema"]
   >;
-const whenCountEvent: hsm.Event<"set:count"> =
-  null as any as hsm.EventOfName<typeof helperModel, "set:count">;
+const whenCountEvent: hsm.Event<"/HelperEvents/count"> =
+  null as any as hsm.EventOfName<typeof helperModel, "/HelperEvents/count">;
 
 void eventNames;
 void tickDispatchEvent;

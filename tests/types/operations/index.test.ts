@@ -26,9 +26,9 @@ const model = hsm.define(
 const started = hsm.start(new CounterInstance(), model);
 const startedCounter: CounterInstance = started;
 
-const sum: number = started.call("sum", 1, 2);
-const format: string = started.call("format", 2);
-const missing: unknown = started.call("missing", 1);
+const sum: Promise<number> = started.call("sum", 1, 2);
+const format: Promise<string> = started.call("format", 2);
+const missing: Promise<unknown> = started.call("missing", 1);
 
 const operations = null as any as hsm.OperationsOf<typeof model>;
 const operationKeys: hsm.OperationKeysOf<typeof model> =
@@ -39,6 +39,23 @@ const guardOperationKeys: hsm.GuardOperationKeysOf<typeof model> =
   null as any as "canSave";
 const formatOperation: (value: number) => string = operations.format;
 const sumOperation: (left: number, right: number) => number = operations.sum;
+const validator: hsm.ModelValidator = {
+  validate(current: hsm.Model) {
+    current.members["/Ops"];
+  },
+};
+const finalizer: hsm.ModelFinalizer = {
+  finalize(current: hsm.Model): hsm.FinalizedModel {
+    return current;
+  },
+};
+const hookedModel = hsm.define(
+  "HookedOps",
+  hsm.validator(validator),
+  hsm.finalizer(finalizer),
+  hsm.state("idle"),
+  hsm.initial(hsm.target("idle")),
+);
 
 // @ts-expect-error onSet keys are restricted to model attributes
 hsm.define(
@@ -106,5 +123,6 @@ void callableOperationKeys;
 void guardOperationKeys;
 void formatOperation;
 void sumOperation;
+void hookedModel;
 void started;
 void startedCounter;

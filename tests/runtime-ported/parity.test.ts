@@ -8,19 +8,22 @@ function delay(ms) {
   });
 }
 
-function ParityMachine() {
-  hsm.Instance.call(this);
-  this.log = [];
+class ParityMachine extends hsm.Instance {
+  constructor() {
+    super();
+    this.log = [];
+  }
 }
-
-ParityMachine.prototype = Object.create(hsm.Instance.prototype);
-ParityMachine.prototype.constructor = ParityMachine;
 
 test('PascalCase exports remain available alongside camelCase', function () {
   assert.strictEqual(typeof hsm.Define, 'function');
   assert.strictEqual(typeof hsm.Config, 'function');
   assert.strictEqual(hsm.Define, hsm.define);
+  assert.strictEqual(hsm.Redefine, hsm.redefine);
   assert.strictEqual(hsm.State, hsm.state);
+  assert.strictEqual(hsm.SubmachineState, hsm.submachineState);
+  assert.strictEqual(hsm.EntryPoint, hsm.entryPoint);
+  assert.strictEqual(hsm.ExitPoint, hsm.exitPoint);
   assert.strictEqual(hsm.Event, hsm.event);
   assert.strictEqual(hsm.EventKind, hsm.kinds.Event);
   assert.strictEqual(hsm.StateKind, hsm.kinds.State);
@@ -31,28 +34,115 @@ test('PascalCase exports remain available alongside camelCase', function () {
   assert.strictEqual(hsm.OnCall, hsm.onCall);
   assert.strictEqual(hsm.ShallowHistory, hsm.shallowHistory);
   assert.strictEqual(hsm.DeepHistory, hsm.deepHistory);
+  assert.strictEqual(hsm.Observe, hsm.observe);
+  assert.strictEqual(hsm.Validator, hsm.validator);
+  assert.strictEqual(hsm.Finalizer, hsm.finalizer);
+  assert.strictEqual(hsm.Dispatch, hsm.dispatch);
   assert.strictEqual(hsm.TakeSnapshot, hsm.takeSnapshot);
   assert.strictEqual(hsm.Clock, hsm.clock);
   assert.strictEqual(hsm.Kinds, hsm.kinds);
 });
 
+test('Redefine replays a model without mutating the source', function () {
+  var base = hsm.Define(
+    'BaseRedefine',
+    hsm.State('idle'),
+    hsm.Initial(hsm.Target('idle'))
+  );
+  var redefined = hsm.Redefine(
+    base,
+    'RenamedRedefine',
+    hsm.State('done'),
+    hsm.Transition(hsm.On('finish'), hsm.Source('idle'), hsm.Target('done'))
+  );
+
+  assert.strictEqual(base.qualifiedName, '/BaseRedefine');
+  assert.strictEqual(redefined.qualifiedName, '/RenamedRedefine');
+  assert.ok(base.members['/BaseRedefine/idle']);
+  assert.strictEqual(base.members['/BaseRedefine/done'], undefined);
+  assert.ok(redefined.members['/RenamedRedefine/idle']);
+  assert.ok(redefined.members['/RenamedRedefine/done']);
+});
+
+test('Redefine re-roots absolute paths from the source model', function () {
+  var base = hsm.Define(
+    'BaseAbsoluteRedefine',
+    hsm.State('idle'),
+    hsm.Initial(hsm.Target('/BaseAbsoluteRedefine/idle'))
+  );
+  var redefined = hsm.Redefine(base, 'RenamedAbsoluteRedefine');
+  var instance = new ParityMachine();
+
+  hsm.start(new hsm.Context(), instance, redefined);
+
+  assert.ok(redefined.members['/RenamedAbsoluteRedefine/idle']);
+  assert.strictEqual(instance.state(), '/RenamedAbsoluteRedefine/idle');
+  hsm.stop(instance);
+});
+
+test('Validator and Finalizer participate in Define and Redefine replay', function () {
+  var original = [];
+  var override = [];
+  var finalized = [];
+  var base = hsm.Define(
+    'ModelHooks',
+    hsm.Validator({
+      validate(model) {
+        original.push(model.qualifiedName);
+      },
+    }),
+    hsm.Finalizer({
+      finalize(model) {
+        var transition = Object.values(model.members).find(function (member) {
+          return hsm.isKind(member.kind, hsm.kinds.Transition) && member.events.includes('go');
+        });
+        finalized.push([model.qualifiedName, transition.kind]);
+        return model;
+      },
+    }),
+    hsm.State('idle',
+      hsm.Transition(hsm.On('go'), hsm.Target('../done'))
+    ),
+    hsm.State('done'),
+    hsm.Initial(hsm.Target('idle'))
+  );
+  var redefined = hsm.Redefine(
+    base,
+    hsm.Validator({
+      validate(model) {
+        override.push(model.qualifiedName);
+      },
+    }),
+    hsm.State('extra')
+  );
+
+  assert.strictEqual(base.qualifiedName, '/ModelHooks');
+  assert.ok(redefined.members['/ModelHooks/extra']);
+  assert.deepStrictEqual(original, ['/ModelHooks']);
+  assert.deepStrictEqual(override, ['/ModelHooks']);
+  assert.deepStrictEqual(finalized, [
+    ['/ModelHooks', hsm.kinds.External],
+    ['/ModelHooks', hsm.kinds.External],
+  ]);
+});
+
 test('canonical Config applies ID, Name, Data, Clock, and Queue without mutating model', function () {
-  var ctx = new hsm.Context();
+  var ctx = new hsm.Context().WithValue(hsm.Keys.Instances, {});
   var first = new ParityMachine();
   var second = new ParityMachine();
   var events = [];
   var queue = [];
   var customQueue = {
     Push(context, event) {
-      events.push(['push', context === ctx, event.name]);
+      events.push(['push', context.Value(hsm.Keys.HSM) === first, event.name]);
       queue.push(event);
     },
     Pop(context) {
-      events.push(['pop', context === ctx]);
+      events.push(['pop', context.Value(hsm.Keys.HSM) === first]);
       return queue.shift();
     },
     Len(context) {
-      events.push(['len', context === ctx, queue.length]);
+      events.push(['len', context.Value(hsm.Keys.HSM) === first, queue.length]);
       return queue.length;
     },
   };
@@ -83,7 +173,7 @@ test('canonical Config applies ID, Name, Data, Clock, and Queue without mutating
   hsm.start(ctx, second, model, { id: 'beta', name: '/LowercaseAlias', data: 'lower' });
 
   assert.strictEqual(hsm.ID(first), 'alpha');
-  assert.strictEqual(hsm.Name(first), '/ConfiguredAlias');
+  assert.strictEqual(hsm.Name(first), 'ConfiguredAlias');
   assert.strictEqual(hsm.QualifiedName(first), '/ConfiguredAlias');
   assert.strictEqual(hsm.TakeSnapshot(first).qualifiedName, '/ConfiguredAlias');
   assert.strictEqual(hsm.TakeSnapshot(first).QualifiedName, '/ConfiguredAlias');
@@ -93,7 +183,7 @@ test('canonical Config applies ID, Name, Data, Clock, and Queue without mutating
   assert.strictEqual(first.clock().now(), 42);
 
   assert.strictEqual(hsm.ID(second), 'beta');
-  assert.strictEqual(hsm.Name(second), '/LowercaseAlias');
+  assert.strictEqual(hsm.Name(second), 'LowercaseAlias');
   assert.strictEqual(hsm.QualifiedName(second), '/LowercaseAlias');
   assert.strictEqual(second.log[0], 'lower');
 
@@ -105,7 +195,7 @@ test('canonical Config applies ID, Name, Data, Clock, and Queue without mutating
 });
 
 test('dispatch and set return completions', async function () {
-  var ctx = new hsm.Context();
+  var ctx = new hsm.Context().WithValue(hsm.Keys.Instances, {});
   var first = new ParityMachine();
   var second = new ParityMachine();
   var event = { name: 'go', kind: hsm.kinds.Event };
@@ -136,8 +226,47 @@ test('dispatch and set return completions', async function () {
   var groupSet = group.set('count', 3);
   assert.ok(groupSet instanceof Promise);
   await groupSet;
-  await group.set('missing' as never, 4 as never);
-  assert.strictEqual(hsm.MakeGroup('dispatch-group', first, second).takeSnapshot().ID, 'dispatch-group');
+  await assert.rejects(
+    group.set('missing' as never, 4 as never),
+    /missing attribute/
+  );
+  var identifiedGroup = hsm.MakeGroup('dispatch-group', first, second);
+  assert.strictEqual(identifiedGroup.id, 'dispatch-group');
+  assert.strictEqual(identifiedGroup.takeSnapshot().length, 2);
+});
+
+test('Public helpers accept nullable explicit contexts', async function () {
+  var instance = new ParityMachine();
+  var model = hsm.Define(
+    'NullableContextHelpers',
+    hsm.Attribute('count', 0),
+    hsm.Operation('sum', function (ctx, inst, a, b) {
+      inst.log.push('sum:' + a + ':' + b);
+      return a + b;
+    }),
+    hsm.State('idle',
+      hsm.Transition(
+        hsm.On('go'),
+        hsm.Effect(function (ctx, inst) {
+          inst.log.push('go');
+        }),
+        hsm.Target('.')
+      ),
+      hsm.Transition(hsm.OnSet('count'), hsm.Target('.')),
+      hsm.Transition(hsm.OnCall('sum'), hsm.Target('.'))
+    ),
+    hsm.Initial(hsm.Target('idle'))
+  );
+
+  hsm.start(new hsm.Context(), instance, model);
+  await hsm.Dispatch(null, instance, { name: 'go', kind: hsm.kinds.Event });
+  await hsm.Set(null, instance, 'count', 7);
+  var result = await hsm.Call(null, instance, 'sum', 2, 5);
+
+  assert.strictEqual(hsm.Get(null, instance, 'count')[0], 7);
+  assert.strictEqual(result, 7);
+  assert.deepStrictEqual(instance.log, ['go', 'sum:2:5']);
+  await hsm.stop(instance);
 });
 
 test('Event schema metadata is preserved in model registration and snapshots', function () {
@@ -164,15 +293,13 @@ test('Event schema metadata is preserved in model registration and snapshots', f
   var snapshot = hsm.TakeSnapshot(instance);
 
   assert.strictEqual(model.events.go.schema, payloadSchema);
-  assert.strictEqual(snapshot.events.length, 1);
-  assert.strictEqual(snapshot.Events, snapshot.events);
-  assert.strictEqual(snapshot.events[0].event, 'go');
-  assert.strictEqual(snapshot.events[0].Name, 'go');
-  assert.strictEqual(snapshot.events[0].Kind, hsm.kinds.Event);
-  assert.strictEqual(snapshot.events[0].Guard, snapshot.events[0].guard);
-  assert.strictEqual(snapshot.events[0].Target, snapshot.events[0].target);
-  assert.strictEqual(snapshot.events[0].schema, payloadSchema);
-  assert.strictEqual(snapshot.events[0].Schema, payloadSchema);
+  assert.strictEqual(snapshot.transitions.length, 1);
+  assert.strictEqual(snapshot.Transitions, snapshot.transitions);
+  assert.strictEqual(snapshot.transitions[0].Name, '/SchemaParity/idle/transition_2');
+  assert.strictEqual(snapshot.transitions[0].Kind, 67343);
+  assert.strictEqual(snapshot.transitions[0].Source, '/SchemaParity/idle');
+  assert.strictEqual(snapshot.transitions[0].Target, '/SchemaParity/done');
+  assert.deepStrictEqual(snapshot.transitions[0].Events, ['go']);
 });
 
 test('TakeSnapshot returns an immutable point-in-time attribute snapshot', function () {
@@ -194,8 +321,8 @@ test('TakeSnapshot returns an immutable point-in-time attribute snapshot', funct
   assert.strictEqual(Object.isFrozen(snapshot.attributes), true);
   assert.strictEqual(snapshot.Attributes, snapshot.attributes);
   assert.strictEqual(snapshot.QueueLen, snapshot.queueLen);
-  assert.strictEqual(Object.isFrozen(snapshot.events), true);
-  assert.strictEqual(Object.isFrozen(snapshot.events[0]), true);
+  assert.strictEqual(Object.isFrozen(snapshot.transitions), true);
+  assert.strictEqual(Object.isFrozen(snapshot.transitions[0]), true);
   assert.strictEqual(Object.isFrozen(bag), true);
   assert.strictEqual(Object.isFrozen(bag.nested), true);
   assert.strictEqual(Object.isFrozen(bag.items), true);
@@ -204,16 +331,16 @@ test('TakeSnapshot returns an immutable point-in-time attribute snapshot', funct
     snapshot.attributes['/SnapshotImmutability/extra'] = true;
   }, TypeError);
   assert.throws(function () {
-    snapshot.events.push({ event: 'later', guard: false });
+    snapshot.transitions.push({ Name: 'later', name: 'later', Kind: hsm.kinds.Transition, kind: hsm.kinds.Transition, Source: '', source: '', Events: [], events: [], Guard: false, guard: false });
   }, TypeError);
   assert.throws(function () {
     bag.nested.count = 9;
   }, TypeError);
 
-  var liveBag = hsm.Get(instance, 'bag');
+  var [liveBag] = hsm.Get(instance, 'bag') as hsm.AttributeRead<{ nested: { count: number }; items: string[] }>;
   liveBag.nested.count = 2;
   liveBag.items.push('b');
-  var freshBag = hsm.Get(instance, 'bag');
+  var [freshBag] = hsm.Get(instance, 'bag') as hsm.AttributeRead<{ nested: { count: number }; items: string[] }>;
   assert.strictEqual(freshBag.nested.count, 1);
   assert.deepStrictEqual(freshBag.items, ['a']);
   hsm.Set(instance, 'bag', { nested: { count: 3 }, items: ['c'] });
@@ -241,11 +368,10 @@ test('Attribute + OnSet + Get/Set parity', async function () {
   );
 
   var sm = hsm.start(new hsm.Context(), instance, model);
-  assert.strictEqual(hsm.Get(instance, 'count'), 1);
-  hsm.Set(instance, 'count', 1);
+  assert.strictEqual(hsm.Get(instance, 'count')[0], 1);
+  await hsm.Set(instance, 'count', 1);
   assert.strictEqual(sm.state(), '/AttributeParity/idle');
-  hsm.Set(instance, 'count', 2);
-  await delay(0);
+  await hsm.Set(instance, 'count', 2);
   assert.strictEqual(sm.state(), '/AttributeParity/changed');
   assert.deepStrictEqual(instance.log, ['1->2']);
 });
@@ -264,14 +390,23 @@ test('Attribute explicit type forms validate runtime Set values', async function
   hsm.start(new hsm.Context(), instance, model);
 
   await hsm.Set(instance, 'count', 1);
-  await hsm.Set(instance, 'count', '1');
+  await assert.rejects(
+    hsm.Set(instance, 'count', '1'),
+    /attribute "count" rejected value/
+  );
   await hsm.Set(instance, 'label', 'set');
-  await hsm.Set(instance, 'label', 1);
+  await assert.rejects(
+    hsm.Set(instance, 'label', 1),
+    /attribute "label" rejected value/
+  );
   await hsm.Set(instance, 'stamp', new Date(1));
-  await hsm.Set(instance, 'stamp', {});
-  assert.strictEqual(hsm.Get(instance, 'count'), 1);
-  assert.strictEqual(hsm.Get(instance, 'label'), 'set');
-  assert.strictEqual(hsm.Get(instance, 'stamp').getTime(), 1);
+  await assert.rejects(
+    hsm.Set(instance, 'stamp', {}),
+    /attribute "stamp" rejected value/
+  );
+  assert.strictEqual(hsm.Get(instance, 'count')[0], 1);
+  assert.strictEqual(hsm.Get(instance, 'label')[0], 'set');
+  assert.strictEqual((hsm.Get(instance, 'stamp')[0] as Date).getTime(), 1);
   assert.throws(function () {
     hsm.Attribute('bad', Number, 'not-a-number' as never);
   }, /default value does not match declared type/);
@@ -299,13 +434,25 @@ test('Set rejects unknown attributes and default-backed type mismatches', async 
 
   var sm = hsm.start(new hsm.Context(), instance, model);
 
-  await hsm.Set(instance, 'missing', 1);
-  await hsm.Set(instance, 'count', '2');
-  await hsm.Set(instance, 'stamp', 0);
-  await hsm.Set(instance, 'items', {});
-  assert.strictEqual(hsm.Get(instance, 'count'), 1);
-  assert.strictEqual(hsm.Get(instance, 'stamp').getTime(), 0);
-  assert.deepStrictEqual(hsm.Get(instance, 'items'), []);
+  await assert.rejects(
+    hsm.Set(instance, 'missing', 1),
+    /missing attribute/
+  );
+  await assert.rejects(
+    hsm.Set(instance, 'count', '2'),
+    /attribute "count" rejected value/
+  );
+  await assert.rejects(
+    hsm.Set(instance, 'stamp', 0),
+    /attribute "stamp" rejected value/
+  );
+  await assert.rejects(
+    hsm.Set(instance, 'items', {}),
+    /attribute "items" rejected value/
+  );
+  assert.strictEqual(hsm.Get(instance, 'count')[0], 1);
+  assert.strictEqual((hsm.Get(instance, 'stamp')[0] as Date).getTime(), 0);
+  assert.deepStrictEqual(hsm.Get(instance, 'items')[0], []);
   assert.strictEqual(sm.state(), '/AttributeSetValidation/idle');
   assert.deepStrictEqual(instance.log, []);
 
@@ -341,11 +488,10 @@ test('Operation + OnCall + Call parity', async function () {
   );
 
   var sm = hsm.start(new hsm.Context(), instance, model);
-  var result = hsm.Call(instance, 'doWork', 2, 3);
-  await delay(0);
+  var result = await hsm.Call(instance, 'doWork', 2, 3);
   assert.strictEqual(result, 5);
   assert.strictEqual(sm.state(), '/CallParity/done');
-  assert.deepStrictEqual(instance.log, ['effect:/CallParity/doWork', 'op:2:3']);
+  assert.deepStrictEqual(instance.log, ['op:2:3', 'effect:/CallParity/doWork']);
 });
 
 test('String operation references work for Entry/Effect/Guard', async function () {
@@ -393,8 +539,8 @@ test('ShallowHistory and DeepHistory restore correctly', async function () {
         hsm.Initial(hsm.Target('A1a'))
       ),
       hsm.State('A2'),
-      hsm.ShallowHistory('shallow'),
-      hsm.DeepHistory('deep'),
+      hsm.ShallowHistory('shallow', hsm.Transition(hsm.Target('A1'))),
+      hsm.DeepHistory('deep', hsm.Transition(hsm.Target('A1'))),
       hsm.Initial(hsm.Target('A1'))
     ),
     hsm.State('B'),
@@ -415,12 +561,121 @@ test('ShallowHistory and DeepHistory restore correctly', async function () {
   assert.strictEqual(sm.state(), '/HistoryParity/A/A1/A1a');
 });
 
+test('SubmachineState flattens child model under the containing state', async function () {
+  var instance = new ParityMachine();
+  var child = hsm.Define(
+    'ChildModel',
+    hsm.State('off',
+      hsm.Transition(hsm.On('turnOn'), hsm.Target('../on'))
+    ),
+    hsm.State('on'),
+    hsm.Initial(hsm.Target('off'))
+  );
+  var parent = hsm.Define(
+    'ParentModel',
+    hsm.SubmachineState('drive', child),
+    hsm.State('done'),
+    hsm.Initial(hsm.Target('drive'))
+  );
+
+  assert.ok(parent.members['/ParentModel/drive/off']);
+  assert.ok(parent.members['/ParentModel/drive/on']);
+  var sm = hsm.start(new hsm.Context(), instance, parent);
+  assert.strictEqual(sm.state(), '/ParentModel/drive/off');
+  await sm.dispatch({ name: 'turnOn', kind: hsm.kinds.Event });
+  assert.strictEqual(sm.state(), '/ParentModel/drive/on');
+});
+
+test('EntryPoint and ExitPoint route through submachine boundaries', async function () {
+  var entryInstance = new ParityMachine();
+  var entryChild = hsm.Define(
+    'EntryChild',
+    hsm.EntryPoint('warm', hsm.Target('on')),
+    hsm.State('off'),
+    hsm.State('on'),
+    hsm.Initial(hsm.Target('off'))
+  );
+  var entryParent = hsm.Define(
+    'EntryParent',
+    hsm.State('idle',
+      hsm.Transition(
+        hsm.On('warm'),
+        hsm.Target('../drive'),
+        hsm.EntryPoint('warm')
+      )
+    ),
+    hsm.SubmachineState('drive', entryChild),
+    hsm.Initial(hsm.Target('idle'))
+  );
+
+  var entrySm = hsm.start(new hsm.Context(), entryInstance, entryParent);
+  await entrySm.dispatch({ name: 'warm', kind: hsm.kinds.Event });
+  assert.strictEqual(entrySm.state(), '/EntryParent/drive/on');
+
+  var exitInstance = new ParityMachine();
+  var exitChild = hsm.Define(
+    'ExitChild',
+    hsm.ExitPoint('complete'),
+    hsm.State('running',
+      hsm.Transition(hsm.On('complete'), hsm.Target('../complete'))
+    ),
+    hsm.Initial(hsm.Target('running'))
+  );
+  var exitParent = hsm.Define(
+    'ExitParent',
+    hsm.SubmachineState('work', exitChild),
+    hsm.State('done'),
+    hsm.Transition(
+      hsm.Source('work'),
+      hsm.ExitPoint('complete'),
+      hsm.Target('done')
+    ),
+    hsm.Initial(hsm.Target('work'))
+  );
+
+  var exitSm = hsm.start(new hsm.Context(), exitInstance, exitParent);
+  assert.strictEqual(exitSm.state(), '/ExitParent/work/running');
+  await exitSm.dispatch({ name: 'complete', kind: hsm.kinds.Event });
+  assert.strictEqual(exitSm.state(), '/ExitParent/done');
+});
+
+test('Observe can be attached with Redefine without mutating the source model', async function () {
+  var instance = new ParityMachine();
+  var observations = [];
+  var base = hsm.Define(
+    'ObserveBase',
+    hsm.State('idle',
+      hsm.Transition(
+        hsm.On('go'),
+        hsm.Effect(function (ctx, inst) {
+          inst.log.push('effect');
+        }),
+        hsm.Target('../done')
+      )
+    ),
+    hsm.State('done'),
+    hsm.Initial(hsm.Target('idle'))
+  );
+  var observed = hsm.Redefine(
+    base,
+    hsm.Observe(function (ctx, inst, event) {
+      observations.push([event.name, event.source, event.data.occurrence]);
+    }, 'go')
+  );
+
+  assert.strictEqual(base.members['/ObserveBase/idle/transition_2/observation'], undefined);
+  var sm = hsm.start(new hsm.Context(), instance, observed);
+  await sm.dispatch({ name: 'go', kind: hsm.kinds.Event });
+  assert.strictEqual(sm.state(), '/ObserveBase/done');
+  assert.deepStrictEqual(instance.log, ['effect']);
+  assert.deepStrictEqual(observations, [
+    ['hsm/observation', '/ObserveBase/idle/transition_2', 'event'],
+  ]);
+});
+
 test('When(function), At(), TakeSnapshot(), and Restart() parity', async function () {
   var instance = new ParityMachine();
-  var resolveReady;
-  var ready = new Promise(function (resolve) {
-    resolveReady = resolve;
-  });
+  var ready = false;
 
   var model = hsm.Define(
     'RuntimeParity',
@@ -447,7 +702,8 @@ test('When(function), At(), TakeSnapshot(), and Restart() parity', async functio
   var sm = hsm.start(new hsm.Context(), instance, model);
   var before = hsm.TakeSnapshot(instance);
   assert.strictEqual(before.state, '/RuntimeParity/waiting');
-  resolveReady();
+  ready = true;
+  await sm.dispatch({ name: 'poll', kind: hsm.kinds.Event });
   await delay(10);
   assert.strictEqual(sm.state(), '/RuntimeParity/done');
   hsm.Restart(instance);

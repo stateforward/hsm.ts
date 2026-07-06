@@ -356,28 +356,22 @@ test('Choice with event data evaluation', async function () {
 });
 
 test('Choice with no matching guards - should throw error', async function () {
-  const instance = new ChoiceInstance();
-
-  const model = hsm.define('NoMatchChoiceMachine',
-    hsm.initial(
-      hsm.target('choice')
-    ),
-    hsm.choice('choice',
-      hsm.transition(
-        hsm.guard(function () {
-          return false; // Always false
-        }),
-        hsm.target('never')
-      )
-    ),
-    hsm.state('never')
-  );
-
-  // Should throw error when no transition matches
   assert.throws(function () {
-    const ctx = new hsm.Context();
-    hsm.start(ctx, instance, model);
-  }, /No transition found for choice vertex/);
+    hsm.define('NoMatchChoiceMachine',
+      hsm.initial(
+        hsm.target('choice')
+      ),
+      hsm.choice('choice',
+        hsm.transition(
+          hsm.guard(function () {
+            return false; // Always false
+          }),
+          hsm.target('never')
+        )
+      ),
+      hsm.state('never')
+    );
+  }, /choice_missing_fallback/);
 });
 
 test('Nested choice pseudostates', async function () {
@@ -482,6 +476,9 @@ test('Choice with side effects in guards', async function () {
           inst.logAction('guard3-evaluated');
           return true;
         }),
+        hsm.target('path3')
+      ),
+      hsm.transition(
         hsm.target('path3')
       )
     ),

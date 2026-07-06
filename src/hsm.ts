@@ -9,7 +9,7 @@ type TimerFunction = (
     ...args: Array<unknown>
 ) => TimerHandle;
 type CancelFunction = (id: TimerHandle | undefined) => void;
-type AnyModelElement = State | Transition | Behavior | Constraint | Vertex;
+type AnyModelElement = State | Transition | Behavior | Constraint | Vertex | AttributeDefinition | OperationDefinition;
 type TransitionTable = Record<Path, TransitionCandidate[]>;
 type TransitionCandidate = {
     transition: Transition;
@@ -20,11 +20,19 @@ type EventRecord = {
   kind: Kind;
   name: string;
   data?: any;
+  metadata?: Record<string, unknown>;
   schema?: any;
   source?: string;
   target?: string;
   id?: string;
   qualifiedName?: string;
+  Kind?: Kind;
+  Name?: string;
+  Schema?: any;
+  Source?: string;
+  Target?: string;
+  ID?: string;
+  QualifiedName?: string;
 };
 
 const EVENT_METADATA_KEYS = [
@@ -60,7 +68,10 @@ type TransitionPath = {
     exit: Path[];
 };
 
+export type AttributeRead<T = unknown> = readonly [T, boolean];
+
 type AttributeDefinition = {
+    kind: Kind;
     name: string;
     qualifiedName: string;
     hasDefault: boolean;
@@ -70,20 +81,25 @@ type AttributeDefinition = {
 };
 
 type OperationDefinition = {
+    kind: Kind;
     name: string;
     qualifiedName: string;
-    implementation: (...args: unknown[]) => unknown;
+    implementation?: (...args: unknown[]) => unknown;
 };
 
-type Model = State & {
+export type Model = State & {
   members: Record<Path, AnyModelElement>;
   transitionMap: Record<Path, Record<Path, any[]>>;
-  deferredMap: Record<Path, Record<Path, boolean>>;
+  deferredMap: Record<Path, Record<Path, string>>;
+  historyPaths: Record<Path, Record<Path, Path[]>>;
+  historyTargets: Record<string, Record<Path, Path>>;
   events: Record<string, EventRecord>;
   attributes: Record<string, AttributeDefinition>;
   operations: Record<string, OperationDefinition>;
   partials: Array<(model: Model, stack: AnyModelElement[]) => void>;
 };
+
+export type FinalizedModel = Model;
 
 type Transition = Element & {
     guard: string;
@@ -134,6 +150,21 @@ type PartialElement<T extends Element = Element, M extends Model = Model> = (
   elements: Element[],
 ) => T | void;
 
+type TransitionSnapshot = Readonly<{
+    name: string;
+    Name: string;
+    kind: Kind;
+    Kind: Kind;
+    source: string;
+    Source: string;
+    target?: string;
+    Target?: string;
+    events: readonly string[];
+    Events: readonly string[];
+    guard: boolean;
+    Guard: boolean;
+}>;
+
 type SnapshotEvent = Readonly<{
     event: string;
     Name: string;
@@ -157,18 +188,14 @@ type Snapshot = Readonly<{
     Attributes: Readonly<Record<string, any>>;
     queueLen: number;
     QueueLen: number;
+    transitions: readonly TransitionSnapshot[];
+    Transitions: readonly TransitionSnapshot[];
     events: readonly SnapshotEvent[];
     Events: readonly SnapshotEvent[];
 }>;
 
-type ActiveContext = {
-  listeners: Array<() => void>;
-  instances: Record<string, Instance>;
-  done: boolean;
-};
-
 type Active = {
-  context: ActiveContext;
+  context: Context;
   promise: Promise<void>;
 };
 
@@ -185,6 +212,40 @@ export interface Config {
     data?: any;
     clock?: PartialClockConfig;
     queue?: QueueShape;
+}
+
+export interface Dispatchable {
+    context(): Context;
+    dispatch(event: EventRecord): Completion;
+    dispatch(ctx: Context, event: EventRecord): Completion;
+}
+
+export interface ModelValidator {
+    validate(model: Model): void;
+}
+
+export interface ModelFinalizer {
+    finalize(model: Model): Model;
+}
+
+export class DefaultModelValidator implements ModelValidator {
+    validate(model: Model): void {
+        validateModelTopology(model);
+    }
+}
+
+export class DefaultModelFinalizer implements ModelFinalizer {
+    finalize(model: Model): Model {
+        model.transitionMap = {};
+        model.deferredMap = {};
+        model.historyPaths = {};
+        model.historyTargets = {};
+        buildTransitionPaths(model);
+        buildTransitionTable(model);
+        buildDeferredTable(model);
+        buildHistoryTables(model);
+        return model;
+    }
 }
 type ClockConfig = {
     setTimeout: TimerFunction;
@@ -403,6 +464,26 @@ export type DeferSpec<EventNames extends readonly string[] = readonly string[]> 
     kind: 'defer';
     eventNames: EventNames;
 };
+export type SubmachineStateSpec<
+    Name extends string = string,
+    Parts extends readonly unknown[] = readonly unknown[]
+> = {
+    kind: 'submachineState';
+    name: Name;
+    parts: Parts;
+};
+export type EntryPointSpec<
+    Name extends string = string,
+    Parts extends readonly unknown[] = readonly unknown[]
+> = { kind: 'entryPoint'; name: Name; parts: Parts };
+export type ExitPointSpec<
+    Name extends string = string,
+    Parts extends readonly unknown[] = readonly unknown[]
+> = { kind: 'exitPoint'; name: Name; parts: Parts };
+export type ObserveSpec<Targets extends readonly unknown[] = readonly unknown[]> = {
+    kind: 'observe';
+    targets: Targets;
+};
 
 export type AttributeSpec<Name extends string = string, Value = unknown> = {
     kind: 'attribute';
@@ -430,6 +511,9 @@ export type OperationSpec<
     impl: Fn;
 };
 
+export type ValidatorSpec = { kind: 'validator'; validator: ModelValidator };
+export type FinalizerSpec = { kind: 'finalizer'; finalizer: ModelFinalizer };
+
 export type ModelElementSpec =
     | TransitionSpec<readonly TransitionBuilderClause[]>
     | StateSpec<string, readonly unknown[]>
@@ -438,11 +522,17 @@ export type ModelElementSpec =
     | ShallowHistorySpec<string, readonly unknown[]>
     | DeepHistorySpec<string, readonly unknown[]>
     | ChoiceSpec<string, readonly unknown[]>
+    | SubmachineStateSpec<string, readonly unknown[]>
+    | EntryPointSpec<string, readonly unknown[]>
+    | ExitPointSpec<string, readonly unknown[]>
     | EntrySpec
     | ExitSpec
     | ActivitySpec
     | AttributeSpec
     | OperationSpec
+    | ValidatorSpec
+    | FinalizerSpec
+    | ObserveSpec
     | DeferSpec
     | { kind: 'unknown' };
 
@@ -459,6 +549,8 @@ export type TransitionBuilderClause =
     | AfterClause
     | EveryClause
     | AtClause
+    | EntryPointSpec
+    | ExitPointSpec
     | { kind: 'unknownTransitionClause' };
 
 type MetaFromBuilder<T> = T extends { __hsmSpec: infer Meta } ? Meta : never;
@@ -846,6 +938,122 @@ type TypedModelFromInfer<
     readonly __hsm_meta: ModelStateMetaFromParts<`/${RootName}`, Parts>;
 };
 
+type ModelRootPathOf<M> = ModelStateMeta<M>['name'] & string;
+
+type ModelRootNameOf<M> = StripLeadingSlash<ModelRootPathOf<M>>;
+
+type ModelInstanceOf<M> =
+    M extends TypedModel<any, any, any, any, any, any, any, infer I>
+        ? I
+        : Instance;
+
+type ReRootPath<
+    Path,
+    OldRoot extends string,
+    NewRoot extends string,
+> =
+    Path extends string
+        ? string extends Path
+            ? string
+            : Path extends OldRoot
+                ? NewRoot
+                : Path extends `${OldRoot}/${infer Rest}`
+                    ? `${NewRoot}/${Rest}`
+                    : Path
+        : never;
+
+type ReRootTransition<
+    Transition,
+    OldRoot extends string,
+    NewRoot extends string,
+> =
+    Transition extends {
+        source: infer Source;
+        target: infer Target;
+        events: infer Events;
+        schema: infer Schema;
+    }
+        ? {
+            source: ReRootPath<Source, OldRoot, NewRoot>;
+            target: Target extends string ? ReRootPath<Target, OldRoot, NewRoot> : undefined;
+            events: Events;
+            schema: Schema;
+        }
+        : never;
+
+type ReRootInitials<
+    Initials,
+    OldRoot extends string,
+    NewRoot extends string,
+> =
+    Initials extends Record<string, string>
+        ? {
+            [K in keyof Initials & string as ReRootPath<K, OldRoot, NewRoot>]:
+                ReRootPath<Initials[K], OldRoot, NewRoot>;
+        }
+        : {};
+
+type CallableOperationsOf<M extends TypedModel<any, any, any, any, any, any, any, any>> = {
+    [K in keyof OperationsOf<M> & string]: Extract<OperationsOf<M>[K], (...args: any[]) => any>;
+};
+
+type RedefinedOperationMap<
+    Source extends TypedModel<any, any, any, any, any, any, any, any>,
+    Parts extends readonly unknown[],
+> = NormalizeOpMap<
+    MergeEventMaps<CallableOperationsOf<Source>, InferredOperations<Parts>>
+>;
+
+type RedefinedModelMeta<
+    Source extends TypedModel<any, any, any, any, any, any, any, any>,
+    RootName extends string,
+    Parts extends readonly unknown[],
+    OldRoot extends string = ModelRootPathOf<Source>,
+    NewRoot extends string = `/${RootName}`,
+    AddedMeta extends {
+        states: string;
+        finalStates: string;
+        transitions: unknown;
+        initials: Record<string, string>;
+        attributes: Record<string, unknown>;
+        operations: Record<string, (...args: any[]) => any>;
+        eventSchemas: Record<string, unknown>;
+    } = ModelStateMetaFromParts<NewRoot, Parts>,
+> = {
+    name: NewRoot;
+    states: ReRootPath<StatePathsOfModel<Source>, OldRoot, NewRoot> | AddedMeta['states'];
+    finalStates: ReRootPath<FinalStatePathsOfModel<Source>, OldRoot, NewRoot> | AddedMeta['finalStates'];
+    transitions:
+        | ReRootTransition<TransitionMetaModel<Source>, OldRoot, NewRoot>
+        | AddedMeta['transitions'];
+    initials: MergeEventMaps<
+        ReRootInitials<ModelStateMeta<Source>['initials'], OldRoot, NewRoot>,
+        AddedMeta['initials']
+    >;
+    attributes: MergeEventMaps<AttributesOf<Source>, InferredAttributes<Parts>>;
+    operations: RedefinedOperationMap<Source, Parts>;
+    eventSchemas: MergeEventMaps<ModelEventSchemas<Source>, AddedMeta['eventSchemas']>;
+};
+
+type RedefinedModelFromInfer<
+    Source extends TypedModel<any, any, any, any, any, any, any, any>,
+    RootName extends string,
+    Parts extends readonly unknown[],
+> = {
+    [K in keyof Model & string]: Model[K];
+} & TypedModel<
+    RedefinedModelMeta<Source, RootName, Parts>['attributes'],
+    RedefinedModelMeta<Source, RootName, Parts>['operations'],
+    any,
+    any,
+    EventUnionFromMap<RedefinedModelMeta<Source, RootName, Parts>['eventSchemas']>,
+    any,
+    RootName,
+    ModelInstanceOf<Source>
+> & {
+    readonly __hsm_meta: RedefinedModelMeta<Source, RootName, Parts>;
+};
+
 type ModelAttributeTypeMap<Parts extends readonly unknown[]> =
     MergeMaps<AttributeFromParts<Parts>>;
 
@@ -926,41 +1134,45 @@ type EventArgsFromOperation<Parts extends readonly unknown[], Name extends strin
 type EventSchemasFromPartialsWithContext<
     Parts extends readonly unknown[],
     ModelParts extends readonly unknown[],
+    ModelRoot extends string = '/',
 > =
     Parts extends readonly [infer H, ...infer T]
         ? H extends EventClause<infer Name, infer Schema>
             ? { [K in Name]: Schema extends undefined ? unknown : Schema } &
-              EventSchemasFromPartialsWithContext<T, ModelParts>
+              EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
             : H extends OnSetClause<infer Name>
                 ? {
-                    [K in `set:${Name}`]: {
+                    [K in ResolvePathExpression<ModelRoot, Name>]: {
                         name: Name;
                         old: EventValueFromAttribute<ModelParts, Name>;
                         new: EventValueFromAttribute<ModelParts, Name>;
                     };
-                } & EventSchemasFromPartialsWithContext<T, ModelParts>
+                } & EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
                 : H extends OnCallClause<infer Name>
                     ? {
-                        [K in `call:${Name}`]: {
+                        [K in ResolvePathExpression<ModelRoot, Name>]: {
                             name: Name;
                             args: EventArgsFromOperation<ModelParts, Name>;
                         };
-                    } & EventSchemasFromPartialsWithContext<T, ModelParts>
+                    } & EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
                     : H extends WhenClause<infer Name>
                         ? {
-                            [K in `set:${Name}`]: {
+                            [K in ResolvePathExpression<ModelRoot, Name>]: {
                                 name: Name;
                                 old: EventValueFromAttribute<ModelParts, Name>;
                                 new: EventValueFromAttribute<ModelParts, Name>;
                             };
-                        } & EventSchemasFromPartialsWithContext<T, ModelParts>
+                        } & EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
                         : H extends TransitionSpec<infer Clauses>
-                            ? EventSchemasFromClausesWithContext<Clauses, ModelParts> &
-                              EventSchemasFromPartialsWithContext<T, ModelParts>
+                            ? EventSchemasFromClausesWithContext<Clauses, ModelParts, ModelRoot> &
+                              EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
                             : H extends StateSpec<infer _Name, infer S>
-                                ? EventSchemasFromPartialsWithContext<S, ModelParts> &
-                                  EventSchemasFromPartialsWithContext<T, ModelParts>
-                                : EventSchemasFromPartialsWithContext<T, ModelParts>
+                                ? EventSchemasFromPartialsWithContext<S, ModelParts, ModelRoot> &
+                                  EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
+                                : H extends SubmachineStateSpec<infer _SubName, infer SubParts>
+                                    ? EventSchemasFromPartialsWithContext<SubParts, ModelParts, ModelRoot> &
+                                      EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
+                                    : EventSchemasFromPartialsWithContext<T, ModelParts, ModelRoot>
         : {};
 
 type EventSchemasFromPartials<Parts extends readonly unknown[]> =
@@ -969,35 +1181,36 @@ type EventSchemasFromPartials<Parts extends readonly unknown[]> =
 type EventSchemasFromClausesWithContext<
     Clauses extends readonly unknown[],
     ModelParts extends readonly unknown[],
+    ModelRoot extends string = '/',
 > =
     Clauses extends readonly [infer H, ...infer T]
         ? H extends EventClause<infer Name, infer Schema>
             ? { [K in Name]: Schema extends undefined ? unknown : Schema } &
-              EventSchemasFromClausesWithContext<T, ModelParts>
+              EventSchemasFromClausesWithContext<T, ModelParts, ModelRoot>
                 : H extends OnSetClause<infer Name>
                 ? {
-                    [K in `set:${Name}`]: {
+                    [K in ResolvePathExpression<ModelRoot, Name>]: {
                         name: Name;
                         old: EventValueFromAttribute<ModelParts, Name>;
                         new: EventValueFromAttribute<ModelParts, Name>;
                     };
-                } & EventSchemasFromClausesWithContext<T, ModelParts>
+                } & EventSchemasFromClausesWithContext<T, ModelParts, ModelRoot>
                 : H extends OnCallClause<infer Name>
                     ? {
-                        [K in `call:${Name}`]: {
+                        [K in ResolvePathExpression<ModelRoot, Name>]: {
                             name: Name;
                             args: EventArgsFromOperation<ModelParts, Name>;
                         };
-                    } & EventSchemasFromClausesWithContext<T, ModelParts>
+                    } & EventSchemasFromClausesWithContext<T, ModelParts, ModelRoot>
                     : H extends WhenClause<infer Name>
                         ? {
-                            [K in `set:${Name}`]: {
+                            [K in ResolvePathExpression<ModelRoot, Name>]: {
                                 name: Name;
                                 old: EventValueFromAttribute<ModelParts, Name>;
                                 new: EventValueFromAttribute<ModelParts, Name>;
                             };
-                        } & EventSchemasFromClausesWithContext<T, ModelParts>
-                        : EventSchemasFromClausesWithContext<T, ModelParts>
+                        } & EventSchemasFromClausesWithContext<T, ModelParts, ModelRoot>
+                        : EventSchemasFromClausesWithContext<T, ModelParts, ModelRoot>
         : {};
 
 type EventSchemasFromClauses<Clauses extends readonly unknown[]> =
@@ -1014,6 +1227,7 @@ type TransitionRaw<Name extends string = string> = {
 type TransitionFromClauses<
     Clauses extends readonly unknown[],
     Owner extends string = string,
+    Root extends string = Owner,
     Source extends string = Owner,
     Target extends string | undefined = undefined,
     Events extends string = never,
@@ -1021,13 +1235,14 @@ type TransitionFromClauses<
     ModelParts extends readonly unknown[] = readonly unknown[],
 > = Clauses extends readonly [infer H, ...infer T]
     ? H extends SourceClause<infer Name>
-        ? TransitionFromClauses<T, Owner, Name, Target, Events, Schemas, ModelParts>
+        ? TransitionFromClauses<T, Owner, Root, Name, Target, Events, Schemas, ModelParts>
         : H extends TargetClause<infer Name>
-            ? TransitionFromClauses<T, Owner, Source, Name, Events, Schemas, ModelParts>
+            ? TransitionFromClauses<T, Owner, Root, Source, Name, Events, Schemas, ModelParts>
             : H extends EventClause<infer Name, infer Schema>
                 ? TransitionFromClauses<
                     T,
                     Owner,
+                    Root,
                     Source,
                     Target,
                     Events | Name,
@@ -1038,13 +1253,14 @@ type TransitionFromClauses<
                     ? TransitionFromClauses<
                         T,
                         Owner,
+                        Root,
                         Source,
                         Target,
-                        Events | `set:${Name}`,
+                        Events | ResolvePathExpression<Root, Name>,
                             MergeEventMaps<
                                 Schemas,
                                 {
-                                    [K in `set:${Name}`]: {
+                                    [K in ResolvePathExpression<Root, Name>]: {
                                         name: Name;
                                         old: EventValueFromAttribute<ModelParts, Name>;
                                         new: EventValueFromAttribute<ModelParts, Name>;
@@ -1053,44 +1269,46 @@ type TransitionFromClauses<
                             >,
                         ModelParts
                     >
-                    : H extends OnCallClause<infer Name>
-                        ? TransitionFromClauses<
-                            T,
-                            Owner,
-                            Source,
-                            Target,
-                            Events | `call:${Name}`,
-                            MergeEventMaps<
-                                Schemas,
-                                {
-                                    [K in `call:${Name}`]: {
-                                        name: Name;
-                                        args: EventArgsFromOperation<ModelParts, Name>;
-                                    };
+                : H extends OnCallClause<infer Name>
+                    ? TransitionFromClauses<
+                        T,
+                        Owner,
+                        Root,
+                        Source,
+                        Target,
+                        Events | ResolvePathExpression<Root, Name>,
+                        MergeEventMaps<
+                            Schemas,
+                            {
+                                [K in ResolvePathExpression<Root, Name>]: {
+                                    name: Name;
+                                    args: EventArgsFromOperation<ModelParts, Name>;
+                                };
                                 }
                             >,
                             ModelParts
                         >
-                        : H extends WhenClause<infer Name>
-                            ? TransitionFromClauses<
-                                T,
-                                Owner,
-                                Source,
-                                Target,
-                                Events | `set:${Name}`,
-                                MergeEventMaps<
-                                    Schemas,
-                                    {
-                                        [K in `set:${Name}`]: {
-                                            name: Name;
-                                            old: EventValueFromAttribute<ModelParts, Name>;
-                                            new: EventValueFromAttribute<ModelParts, Name>;
+                : H extends WhenClause<infer Name>
+                    ? TransitionFromClauses<
+                        T,
+                        Owner,
+                        Root,
+                        Source,
+                        Target,
+                        Events | ResolvePathExpression<Root, Name>,
+                        MergeEventMaps<
+                            Schemas,
+                            {
+                                [K in ResolvePathExpression<Root, Name>]: {
+                                    name: Name;
+                                    old: EventValueFromAttribute<ModelParts, Name>;
+                                    new: EventValueFromAttribute<ModelParts, Name>;
                                         };
                                     }
                                 >,
                                 ModelParts
                             >
-                            : TransitionFromClauses<T, Owner, Source, Target, Events, Schemas, ModelParts>
+                            : TransitionFromClauses<T, Owner, Root, Source, Target, Events, Schemas, ModelParts>
     : {
           owner: Owner;
           source: Source;
@@ -1126,6 +1344,8 @@ type InferFromSpec<
     AllParts extends readonly unknown[],
 > = Spec extends StateSpec<infer Name, infer P>
     ? StateFromSpec<Name, P, ParentPath, ModelRoot, AllParts>
+    : Spec extends SubmachineStateSpec<infer Name, infer P>
+        ? StateFromSpec<Name, P, ParentPath, ModelRoot, AllParts>
     : Spec extends FinalSpec<infer Name>
         ? FinalFromSpec<Name, ParentPath>
         : Spec extends TransitionSpec<infer Clauses>
@@ -1142,7 +1362,11 @@ type InferFromSpec<
                                 ? StateAliasFromPseudo<Name, P, ParentPath, ModelRoot, AllParts>
                                 : Spec extends ChoiceSpec<infer Name, infer P>
                                     ? StateAliasFromPseudo<Name, P, ParentPath, ModelRoot, AllParts>
-                                    : { states: never; finalStates: never; transitions: never; initials: {}; attributes: {}; operations: {}; eventSchemas: {} };
+                                    : Spec extends EntryPointSpec<infer Name, infer P>
+                                        ? StateAliasFromPseudo<Name, P, ParentPath, ModelRoot, AllParts>
+                                        : Spec extends ExitPointSpec<infer Name, infer P>
+                                            ? StateAliasFromPseudo<Name, P, ParentPath, ModelRoot, AllParts>
+                                            : { states: never; finalStates: never; transitions: never; initials: {}; attributes: {}; operations: {}; eventSchemas: {} };
 
 type StateAliasFromPseudo<
     Name extends string,
@@ -1225,20 +1449,21 @@ type FinalFromSpec<Name extends string, ParentPath extends string> = {
 type EventSchemasFromChildrenWithContext<
     Parts extends readonly unknown[],
     AllParts extends readonly unknown[],
+    ModelRoot extends string = '/',
 > =
     Parts extends readonly [infer H, ...infer T]
         ? H extends StateSpec<any, infer ChildParts>
-            ? EventSchemasFromPartialsWithContext<ChildParts, AllParts> &
-              EventSchemasFromChildrenWithContext<T, AllParts>
+            ? EventSchemasFromPartialsWithContext<ChildParts, AllParts, ModelRoot> &
+              EventSchemasFromChildrenWithContext<T, AllParts, ModelRoot>
             : H extends FinalSpec<any>
-                ? EventSchemasFromChildrenWithContext<T, AllParts>
+                ? EventSchemasFromChildrenWithContext<T, AllParts, ModelRoot>
                 : H extends InitialSpec<infer Clauses>
-                    ? EventSchemasFromClausesWithContext<Clauses, AllParts> &
-                      EventSchemasFromChildrenWithContext<T, AllParts>
+                    ? EventSchemasFromClausesWithContext<Clauses, AllParts, ModelRoot> &
+                      EventSchemasFromChildrenWithContext<T, AllParts, ModelRoot>
                     : H extends TransitionSpec<infer Clauses>
-                        ? EventSchemasFromClausesWithContext<Clauses, AllParts> &
-                          EventSchemasFromChildrenWithContext<T, AllParts>
-                        : EventSchemasFromChildrenWithContext<T, AllParts>
+                        ? EventSchemasFromClausesWithContext<Clauses, AllParts, ModelRoot> &
+                          EventSchemasFromChildrenWithContext<T, AllParts, ModelRoot>
+                        : EventSchemasFromChildrenWithContext<T, AllParts, ModelRoot>
         : {};
 
 type EventSchemasFromChildren<Parts extends readonly unknown[]> =
@@ -1253,13 +1478,13 @@ type TransitionFromSpec<
     states: never;
     finalStates: never;
     transitions: NormalizeTransition<
-        TransitionFromClauses<Clauses, OwnerPath, OwnerPath, undefined, never, {}, ModelParts>,
+        TransitionFromClauses<Clauses, OwnerPath, ModelRoot, OwnerPath, undefined, never, {}, ModelParts>,
         OwnerPath,
         ModelRoot
     >;
     attributes: {};
     operations: {};
-    eventSchemas: EventSchemasFromClausesWithContext<Clauses, ModelParts>;
+    eventSchemas: EventSchemasFromClausesWithContext<Clauses, ModelParts, ModelRoot>;
     initials: {};
 };
 
@@ -1269,7 +1494,7 @@ type InitialsFromClauses<
     ModelRoot extends string,
 > =
     NormalizeTransition<
-        TransitionFromClauses<Clauses, OwnerPath, OwnerPath>,
+        TransitionFromClauses<Clauses, OwnerPath, ModelRoot, OwnerPath>,
         OwnerPath,
         ModelRoot
     >['target'] extends infer Target
@@ -1287,14 +1512,14 @@ type InitialFromSpec<
     states: never;
     finalStates: never;
     transitions: NormalizeTransition<
-        TransitionFromClauses<Clauses, OwnerPath, OwnerPath, undefined, never, {}, ModelParts>,
+        TransitionFromClauses<Clauses, OwnerPath, ModelRoot, OwnerPath, undefined, never, {}, ModelParts>,
         OwnerPath,
         ModelRoot
     >;
     initials: InitialsFromClauses<Clauses, OwnerPath, ModelRoot>;
     attributes: {};
     operations: {};
-    eventSchemas: EventSchemasFromClausesWithContext<Clauses, ModelParts>;
+    eventSchemas: EventSchemasFromClausesWithContext<Clauses, ModelParts, ModelRoot>;
 };
 
 type NormalizeTransition<
@@ -1336,7 +1561,7 @@ type ModelStateMetaFromParts<
     attributes: InferredAttributes<Parts>;
     operations: InferredOperations<Parts>;
     eventSchemas: MergeEventMaps<
-        EventSchemasFromPartialsWithContext<Parts, Parts>,
+        EventSchemasFromPartialsWithContext<Parts, Parts, RootPath>,
         EventSchemaFromTransitions<
             CollectModelParts<Parts, RootPath, RootPath, Parts>['transitions']
         >
@@ -1656,6 +1881,8 @@ export type SnapshotOf<M extends TypedModel<any, any, any, any, any, any, any, a
     readonly Attributes: Readonly<AttributesOf<M>>;
     readonly queueLen: number;
     readonly QueueLen: number;
+    readonly transitions: readonly TransitionSnapshotOf<M>[];
+    readonly Transitions: readonly TransitionSnapshotOf<M>[];
     readonly events: readonly EventSnapshotOf<M>[];
     readonly Events: readonly EventSnapshotOf<M>[];
 };
@@ -1685,6 +1912,30 @@ export type EventSnapshotOf<M extends TypedModel<any, any, any, any, any, any, a
     }>;
 }[EventNamesFromTransitions<M>];
 
+export type TransitionSnapshotOf<M extends TypedModel<any, any, any, any, any, any, any, any>> =
+    TransitionMetaModel<M> extends infer Transition
+        ? Transition extends {
+            source: infer Source;
+            target: infer Target;
+            events: infer Events;
+        }
+            ? Readonly<{
+                readonly name: string;
+                readonly Name: string;
+                readonly kind: Kind;
+                readonly Kind: Kind;
+                readonly source: Source & string;
+                readonly Source: Source & string;
+                readonly target: Target extends string ? Target : undefined;
+                readonly Target: Target extends string ? Target : undefined;
+                readonly events: readonly (Events & string)[];
+                readonly Events: readonly (Events & string)[];
+                readonly guard: boolean;
+                readonly Guard: boolean;
+            }>
+            : never
+        : never;
+
 export type BehaviorCallbackFor<
     M extends TypedModel<any, any, any, any, any, any, any, any>,
 > = (ctx: Context, instance: M['__hsm_instance'] & Instance, event: EventOfName<M, EventNamesOf<M> & string>) => unknown;
@@ -1701,20 +1952,43 @@ export type MachineInstanceFor<
     ? Omit<I, "dispatch" | "state" | "takeSnapshot" | "get" | "set" | "call"> & {
         __hsm_model: M;
         dispatch(event: DispatchEventsOf<M>): Completion;
+        dispatch(ctx: Context, event: DispatchEventsOf<M>): Completion;
+        Dispatch(event: DispatchEventsOf<M>): Completion;
+        Dispatch(ctx: Context, event: DispatchEventsOf<M>): Completion;
         state(): StatePathsOf<M>;
+        State(): StatePathsOf<M>;
         takeSnapshot(): SnapshotOf<M>;
-        get<K extends keyof A & string>(name: K): A[K];
-        get(name: string): unknown;
+        TakeSnapshot(): SnapshotOf<M>;
+        get<K extends keyof A & string>(name: K): AttributeRead<A[K]>;
+        get(name: string): AttributeRead;
+        Get<K extends keyof A & string>(name: K): AttributeRead<A[K]>;
+        Get(name: string): AttributeRead;
         set<K extends keyof A & string>(name: K, value: A[K]): Completion;
         set<Name extends string>(
+            name: Name extends keyof A & string ? never : Name,
+            value: unknown,
+        ): Completion;
+        Set<K extends keyof A & string>(name: K, value: A[K]): Completion;
+        Set<Name extends string>(
             name: Name extends keyof A & string ? never : Name,
             value: unknown,
         ): Completion;
         call<K extends keyof O & string>(
             name: K,
             ...args: Parameters<Extract<O[K], (...args: any[]) => any>>
-        ): ReturnType<Extract<O[K], (...args: any[]) => any>>;
-        call(name: string, ...args: unknown[]): unknown;
+        ): Promise<Awaited<ReturnType<Extract<O[K], (...args: any[]) => any>>>>;
+        call(name: string, ...args: unknown[]): Promise<unknown>;
+        Call<K extends keyof O & string>(
+            name: K,
+            ...args: Parameters<Extract<O[K], (...args: any[]) => any>>
+        ): Promise<Awaited<ReturnType<Extract<O[K], (...args: any[]) => any>>>>;
+        Call(name: string, ...args: unknown[]): Promise<unknown>;
+        start(ctx?: Context, data?: unknown): Promise<I>;
+        Start(ctx?: Context, data?: unknown): Promise<I>;
+        stop(): Completion;
+        Stop(): Completion;
+        restart(data?: unknown): Completion;
+        Restart(data?: unknown): Completion;
     }
     : never;
 
@@ -1825,14 +2099,15 @@ type GroupSnapshotsOfFlattenedMembers<Members extends readonly unknown[]> =
         ]
         : readonly [];
 
-export type GroupSnapshotOf<Members extends readonly unknown[]> = Snapshot & {
-    readonly members: GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>;
-};
+export type GroupSnapshotOf<Members extends readonly unknown[]> =
+    GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>;
 
 type BuilderWithSpec<Signature, Spec> = Signature & { readonly __hsmSpec: Spec };
 
 type BehaviorArgument<EventType extends EventRecord = EventRecord> =
-    ((ctx: Context, instance: Instance, evt: EventType) => unknown) | string;
+    | ((ctx: Context, instance: Instance, evt: EventType) => unknown)
+    | string
+    | { dispatch(ctx: Context, event: EventType): Completion };
 
 function attachSpec<Signature, Spec>(
     builder: Signature,
@@ -1844,18 +2119,19 @@ function attachSpec<Signature, Spec>(
 }
 
 type InternalRuntime = {
-  dispatch: (event: EventRecord) => Completion;
+  dispatch: (ctx: Context, event: EventRecord) => Completion;
+  start: (ctx?: Context, data?: unknown) => Promise<Instance>;
   state: () => string;
-  context: () => ActiveContext;
+  context: () => Context;
   clock: ClockConfig;
-  get: (name: string) => unknown;
+  get: (name: string) => AttributeRead;
   set: (name: string, value: unknown) => Completion;
   invoke: (name: string, ctx: Context, args: Array<unknown>) => unknown;
-  call: (name: string, ...args: unknown[]) => unknown;
-  restart: (data?: unknown) => void;
+  call: (name: string, ...args: unknown[]) => Promise<unknown>;
+  restart: (data?: unknown) => Completion;
   takeSnapshot: () => Snapshot;
-  onAfter: (bucket: keyof HSM["after"], key: string, listener: () => void) => void;
-  stop: () => void;
+  onAfter: (bucket: keyof HSM["after"], key: string, listener: () => void) => () => void;
+  stop: () => Completion;
   readonly id: string;
   readonly model: any;
   readonly name: string;
@@ -1867,6 +2143,18 @@ export type { Snapshot, ClockConfig, QueueShape };
 
 type InternalRuntimeMap = WeakMap<object, InternalRuntime>;
 const runtimeByInstance: InternalRuntimeMap = new WeakMap();
+const submachineRoots = new WeakMap<State, string>();
+const modelRebaseRoots = new WeakMap<Model, string[]>();
+const contextHSM = new WeakMap<Context, Dispatchable>();
+const contextOwner = new WeakMap<Context, Dispatchable>();
+const contextParents = new WeakMap<Context, Context | undefined>();
+const contextValues = new WeakMap<Context, Map<unknown, unknown>>();
+
+export const Keys = Object.freeze({
+    HSM: "hsm",
+    Owner: "owner",
+    Instances: "instances",
+});
 
 function bindRuntime(instance: object, runtime: InternalRuntime): void {
     runtimeByInstance.set(instance, runtime);
@@ -1877,6 +2165,80 @@ function runtimeFor(instance: unknown): InternalRuntime | undefined {
         return undefined;
     }
     return runtimeByInstance.get(instance);
+}
+
+function isDispatchable(value: unknown): value is Dispatchable {
+    return !!value &&
+        typeof value === "object" &&
+        typeof (value as { context?: unknown }).context === "function" &&
+        typeof (value as { dispatch?: unknown }).dispatch === "function";
+}
+
+export function fromContext(ctx: Context): readonly [Dispatchable | undefined, boolean] {
+    var value = ctx.Value(Keys.HSM);
+    if (value && isDispatchable(value)) {
+        return [value, true];
+    }
+    var fallback = contextHSM.get(ctx);
+    return [fallback, fallback !== undefined];
+}
+
+export function instancesFromContext(ctx: Context): readonly [Record<string, Instance>, boolean] {
+    var value = ctx.Value(Keys.Instances);
+    if (value && typeof value === "object") {
+        return [value as Record<string, Instance>, true];
+    }
+    return [ctx.instances, false];
+}
+
+function parentContextForStart(ctx: Context, instance: Instance): Context {
+    var current: Context | undefined = ctx;
+    while (current) {
+        var values = contextValues.get(current);
+        if (values && values.has(Keys.HSM) && values.get(Keys.HSM) === instance) {
+            return contextParents.get(current) || new Context();
+        }
+        current = contextParents.get(current);
+    }
+    return ctx;
+}
+
+function rebaseAbsolutePath(model: Model, stack: AnyModelElement[], name: string): string {
+    if (!isAbsolute(name) || name === model.qualifiedName) {
+        return name;
+    }
+    var relativeName = name.slice(1);
+    var parts = relativeName.split("/");
+    var sourceRoot = "/" + parts[0];
+    for (var i = stack.length - 1; i >= 0; i--) {
+        var element = stack[i];
+        if (
+            isStateElement(element) &&
+            isKind(element.kind, kinds.SubmachineState) &&
+            submachineRoots.get(element) === sourceRoot
+        ) {
+            return join(element.qualifiedName, parts.slice(1).join("/"));
+        }
+    }
+    var rebaseRoots = modelRebaseRoots.get(model);
+    if (rebaseRoots) {
+        for (var rootIndex = 0; rootIndex < rebaseRoots.length; rootIndex++) {
+            var root = rebaseRoots[rootIndex];
+            if (root === model.qualifiedName) {
+                continue;
+            }
+            if (name === root) {
+                return model.qualifiedName;
+            }
+            if (isAncestor(root, name)) {
+                return join(model.qualifiedName, name.slice(root.length + 1));
+            }
+        }
+    }
+    if (isAncestor(model.qualifiedName, name)) {
+        return name;
+    }
+    return join(model.qualifiedName, relativeName);
 }
 
 
@@ -2081,13 +2443,43 @@ export class Context {
     instances: Record<string, Instance>;
     done: boolean;
 
-    constructor() {
+    constructor(
+        parent?: Context,
+        values?: Iterable<readonly [unknown, unknown]> | Record<string, unknown>,
+    ) {
         this.listeners = [];
-        this.instances = {};
+        var localValues = values && typeof (values as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function"
+            ? new Map(values as Iterable<readonly [unknown, unknown]>)
+            : new Map(Object.entries(values || {}));
+        var instances = localValues.get(Keys.Instances);
+        var inheritedInstances = parent ? parent.Value(Keys.Instances) : undefined;
+        this.instances = instances && typeof instances === "object"
+            ? instances as Record<string, Instance>
+            : inheritedInstances && typeof inheritedInstances === "object"
+            ? inheritedInstances as Record<string, Instance>
+            : {};
         this.done = false;
+        contextParents.set(this, parent);
+        contextValues.set(this, localValues);
+        if (parent && parent.done) {
+            this.done = true;
+        } else if (parent) {
+            var cancelFromParent = () => {
+                parent.removeEventListener("done", cancelFromParent);
+                this.cancel();
+            };
+            parent.addEventListener("done", cancelFromParent);
+            this.addEventListener("done", () => {
+                parent.removeEventListener("done", cancelFromParent);
+            });
+        }
     }
 
     addEventListener(_type: "done", listener: () => void): void {
+        if (this.done) {
+            listener();
+            return;
+        }
         this.listeners.push(listener);
     }
 
@@ -2096,6 +2488,51 @@ export class Context {
         if (index !== -1) {
             this.listeners.splice(index, 1);
         }
+    }
+
+    cancel(): void {
+        if (this.done) {
+            return;
+        }
+        this.done = true;
+        var listeners = this.listeners.slice();
+        for (var i = 0; i < listeners.length; i++) {
+            listeners[i]();
+        }
+    }
+
+    Cancel(): void {
+        this.cancel();
+    }
+
+    Value(key: unknown): unknown {
+        var values = contextValues.get(this);
+        if (values && values.has(key)) {
+            return values.get(key);
+        }
+        var parent = contextParents.get(this);
+        return parent ? parent.Value(key) : undefined;
+    }
+
+    value(key: unknown): unknown {
+        return this.Value(key);
+    }
+
+    WithValue(key: unknown, value: unknown): Context {
+        return new Context(this, new Map([[key, value]]));
+    }
+
+    withValue(key: unknown, value: unknown): Context {
+        return this.WithValue(key, value);
+    }
+
+    WithCancel(): readonly [Context, () => void] {
+        var ctx = new Context(this);
+        return [ctx, () => ctx.cancel()];
+    }
+
+    withCancel(): readonly [Context, () => void] {
+        return this.WithCancel();
     }
 }
 
@@ -2140,22 +2577,25 @@ export class Context {
 // Define special events
 export const InitialEvent = {
     kind: kinds.CompletionEvent,
-    qualifiedName: "hsm_initial",
-    name: "hsm_initial"
+    qualifiedName: "hsm/initial",
+    name: "hsm/initial"
 };
 
-// AnyEvent is not used in this optimized version
-// Wildcard events are not supported for performance reasons
+export const AnyEvent = {
+    kind: kinds.Event,
+    qualifiedName: "*",
+    name: "*"
+};
 
 
 export const FinalEvent = {
-    name: 'hsm_final',
+    name: 'hsm/final',
     kind: kinds.CompletionEvent
 };
 
 
 export const ErrorEvent = {
-    name: 'hsm_error',
+    name: 'hsm/error',
     kind: kinds.ErrorEvent
 };
 
@@ -2228,9 +2668,321 @@ function isThenable(value: unknown): boolean {
         typeof (value as { then?: unknown }).then === "function";
 }
 
+function isAsyncFunction(value: unknown): boolean {
+    return typeof value === "function" &&
+        (value as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction";
+}
+
+function errorCompletion(error: Error): Completion {
+    var completion = Promise.reject(error) as Completion & { __hsmError?: Error };
+    completion.__hsmError = error;
+    completion.catch(function () {});
+    return completion;
+}
+
 function validateNameNoSlash(kind: string, name: string): void {
     if (name.indexOf("/") !== -1) {
         throw new TypeError(kind + ' name "' + name + '" cannot contain "/"');
+    }
+}
+
+function isRelativePathReference(name: string): boolean {
+    return name === "." || name === ".." || name.startsWith("./") || name.startsWith("../");
+}
+
+function setModelMember(model: Model, member: AnyModelElement): void {
+    if (model.members[member.qualifiedName]) {
+        throw new Error("duplicate state " + member.qualifiedName);
+    }
+    model.members[member.qualifiedName] = member;
+}
+
+function modelElementIndex(model: Model): number {
+    var count = 0;
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (!isKind(member.kind, kinds.Attribute, kinds.Operation)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+function directStateChildren(model: Model, owner: State): State[] {
+    var children: State[] = [];
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (
+            member !== owner &&
+            isStateElement(member) &&
+            dirname(member.qualifiedName) === owner.qualifiedName
+        ) {
+            children.push(member);
+        }
+    }
+    return children;
+}
+
+function containingSubmachine(model: Model, qualifiedName: string | undefined): string | undefined {
+    if (!qualifiedName) {
+        return undefined;
+    }
+    var current = dirname(qualifiedName);
+    while (current && current !== "/" && current !== model.qualifiedName) {
+        var member = model.members[current];
+        if (member && isStateElement(member) && isKind(member.kind, kinds.SubmachineState)) {
+            return current;
+        }
+        current = dirname(current);
+    }
+    return undefined;
+}
+
+function validateModelTopology(model: Model): void {
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (isStateElement(member)) {
+            validateStateTopology(model, member);
+        }
+        if (isVertex(member) && isKind(member.kind, kinds.Pseudostate)) {
+            validatePseudostateTopology(model, member);
+        }
+        if (isTransitionElement(member)) {
+            validateTransitionTopology(model, member);
+        }
+        if (isBehaviorElement(member)) {
+            validateBehaviorTopology(model, member);
+        }
+    }
+    for (var attributeName in model.attributes) {
+        var attribute = model.attributes[attributeName];
+        var changeEvent = model.events[attributeName];
+        if (
+            !attribute.hasType &&
+            !attribute.hasDefault &&
+            !(changeEvent && isKind(changeEvent.kind, kinds.ChangeEvent))
+        ) {
+            throw new Error("invalid attribute " + attribute.qualifiedName);
+        }
+    }
+}
+
+function validateStateTopology(model: Model, state: State): void {
+    var children = directStateChildren(model, state);
+    var hasHistoryDefault = false;
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (
+            isVertex(member) &&
+            isKind(member.kind, kinds.ShallowHistory, kinds.DeepHistory) &&
+            dirname(member.qualifiedName) === state.qualifiedName &&
+            member.transitions.length > 0
+        ) {
+            hasHistoryDefault = true;
+            break;
+        }
+    }
+    if (
+        isKind(state.kind, kinds.FinalState) &&
+        (
+            state.entry.length > 0 ||
+            state.exit.length > 0 ||
+            state.activities.length > 0 ||
+            state.deferred.length > 0 ||
+            state.transitions.length > 0 ||
+            !!state.initial ||
+            children.length > 0
+        )
+    ) {
+        throw new Error("final state " + state.qualifiedName + " cannot have behavior, children, initial, defer, or transitions");
+    }
+    if (
+        !isKind(state.kind, kinds.FinalState) &&
+        children.length > 1 &&
+        !hasHistoryDefault &&
+        !state.initial
+    ) {
+        throw new Error("missing initial for " + state.qualifiedName);
+    }
+    if (state.initial && !isVertex(model.members[state.initial])) {
+        throw new Error('target "' + state.initial + '" not found');
+    }
+    for (var entryIndex = 0; entryIndex < state.entry.length; entryIndex++) {
+        var entryBehavior = getBehavior(model, state.entry[entryIndex]);
+        if (!entryBehavior) {
+            throw new Error("missing behavior " + state.entry[entryIndex]);
+        }
+        if (isAsyncFunction(entryBehavior.operation)) {
+            throw new Error("entry must be a synchronous function");
+        }
+    }
+    for (var exitIndex = 0; exitIndex < state.exit.length; exitIndex++) {
+        var exitBehavior = getBehavior(model, state.exit[exitIndex]);
+        if (!exitBehavior) {
+            throw new Error("missing behavior " + state.exit[exitIndex]);
+        }
+        if (isAsyncFunction(exitBehavior.operation)) {
+            throw new Error("exit must be a synchronous function");
+        }
+    }
+    for (var activityIndex = 0; activityIndex < state.activities.length; activityIndex++) {
+        if (!getBehavior(model, state.activities[activityIndex])) {
+            throw new Error("missing behavior " + state.activities[activityIndex]);
+        }
+    }
+}
+
+function validatePseudostateTopology(model: Model, vertex: Vertex): void {
+    if (isKind(vertex.kind, kinds.Choice)) {
+        if (vertex.transitions.length === 0) {
+            throw new Error("choice_missing_fallback: choice " + vertex.qualifiedName + " requires a fallback transition");
+        }
+        for (var i = 0; i < vertex.transitions.length - 1; i++) {
+            var branch = getTransition(model, vertex.transitions[i]);
+            if (branch && !branch.guard) {
+                throw new Error("choice_default_not_last: choice " + vertex.qualifiedName + " fallback transition must be last");
+            }
+        }
+        var last = getTransition(model, vertex.transitions[vertex.transitions.length - 1]);
+        if (!last || last.guard) {
+            throw new Error("choice_missing_fallback: choice " + vertex.qualifiedName + " requires a fallback transition");
+        }
+    }
+    if (isKind(vertex.kind, kinds.ShallowHistory, kinds.DeepHistory)) {
+        if (dirname(vertex.qualifiedName) === model.qualifiedName) {
+            throw new Error("history must be declared within a nested StateElement");
+        }
+        if (vertex.transitions.length === 0) {
+            throw new Error("history requires a default transition");
+        }
+    }
+    if (isKind(vertex.kind, kinds.EntryPoint)) {
+        if (vertex.transitions.length === 0) {
+            throw new Error("entry point target " + vertex.qualifiedName + " not found");
+        }
+        for (var entryIndex = 0; entryIndex < vertex.transitions.length; entryIndex++) {
+            var entryTransition = getTransition(model, vertex.transitions[entryIndex]);
+            var entryTarget = getVertex(model, entryTransition?.target);
+            if (!entryTarget) {
+                throw new Error('target "' + entryTransition?.target + '" not found');
+            }
+            if (isKind(entryTarget.kind, kinds.EntryPoint, kinds.ExitPoint)) {
+                throw new Error("entry point target " + vertex.qualifiedName + " is not a state");
+            }
+        }
+    }
+}
+
+function validateTransitionTopology(model: Model, transition: Transition): void {
+    var source = getVertex(model, transition.source);
+    if (!source) {
+        throw new Error('source "' + transition.source + '" not found');
+    }
+    var target = getVertex(model, transition.target);
+    if (transition.target && !target) {
+        throw new Error('target "' + transition.target + '" not found');
+    }
+    if (!transition.target && transition.effect.length === 0) {
+        throw new Error("target or effect is required for transition " + transition.qualifiedName);
+    }
+    var sourceBoundary = containingSubmachine(model, transition.source);
+    var targetBoundary = containingSubmachine(model, transition.target);
+    var ownerBoundary = containingSubmachine(model, transition.qualifiedName);
+    var ownerMatchesSourceBoundary = !!(
+        ownerBoundary &&
+        sourceBoundary &&
+        (
+            ownerBoundary === sourceBoundary ||
+            isAncestor(ownerBoundary, sourceBoundary) ||
+            isAncestor(sourceBoundary, ownerBoundary)
+        )
+    );
+    var ownerMatchesTargetBoundary = !!(
+        ownerBoundary &&
+        targetBoundary &&
+        (
+            ownerBoundary === targetBoundary ||
+            isAncestor(ownerBoundary, targetBoundary) ||
+            isAncestor(targetBoundary, ownerBoundary)
+        )
+    );
+    if (
+        sourceBoundary &&
+        !ownerMatchesSourceBoundary &&
+        source &&
+        !isKind(source.kind, kinds.ExitPoint)
+    ) {
+        throw new Error("submachine internal source " + transition.source);
+    }
+    if (
+        target &&
+        targetBoundary &&
+        targetBoundary !== sourceBoundary &&
+        !ownerMatchesTargetBoundary
+    ) {
+        if (!isKind(target.kind, kinds.EntryPoint)) {
+            throw new Error("cannot target internal state " + transition.target);
+        }
+    }
+    if (
+        sourceBoundary &&
+        transition.target &&
+        targetBoundary !== sourceBoundary &&
+        source &&
+        target &&
+        !isKind(target.kind, kinds.EntryPoint) &&
+        !isKind(source.kind, kinds.ExitPoint)
+    ) {
+        throw new Error("submachine boundary target " + transition.target + " leaves " + sourceBoundary);
+    }
+    if (
+        target &&
+        isKind(target.kind, kinds.EntryPoint) &&
+        sourceBoundary === targetBoundary &&
+        source &&
+        !isKind(source.kind, kinds.ExitPoint)
+    ) {
+        throw new Error("entry point target cannot be internal");
+    }
+    if (transition.guard) {
+        var guard = getConstraint(model, transition.guard);
+        if (!guard) {
+            throw new Error("missing behavior " + transition.guard);
+        }
+        if (isAsyncFunction(guard.expression)) {
+            throw new Error("guard must be a synchronous function");
+        }
+    }
+    for (var i = 0; i < transition.effect.length; i++) {
+        var effectBehavior = getBehavior(model, transition.effect[i]);
+        if (!effectBehavior) {
+            throw new Error("missing behavior " + transition.effect[i]);
+        }
+        if (isAsyncFunction(effectBehavior.operation)) {
+            throw new Error("effect must be a synchronous function");
+        }
+    }
+    for (var eventIndex = 0; eventIndex < transition.events.length; eventIndex++) {
+        var event = model.events[transition.events[eventIndex]];
+        if (!event) {
+            continue;
+        }
+        var sourceName = event.source || event.name;
+        if (isKind(event.kind, kinds.ChangeEvent) && !model.attributes[sourceName]) {
+            throw new Error("missing attribute " + sourceName);
+        }
+    }
+}
+
+function validateBehaviorTopology(model: Model, behavior: Behavior): void {
+    if (behavior.operationName) {
+        var operation = model.operations[behavior.operationName];
+        if (!operation) {
+            throw new Error('missing operation "' + behavior.operationName + '"');
+        }
+        if (!isKind(behavior.kind, kinds.Concurrent) && isAsyncFunction(operation.implementation)) {
+            throw new Error("behavior must be a synchronous function");
+        }
     }
 }
 
@@ -2313,6 +3065,212 @@ function qualifyModelName(model: Model, name: string): string {
     return join(model.qualifiedName, name);
 }
 
+function uniqueModelRoots(names: string[]): string[] {
+    var result: string[] = [];
+    var seen: Record<string, boolean> = {};
+    for (var i = 0; i < names.length; i++) {
+        var name = names[i];
+        if (!name || seen[name]) {
+            continue;
+        }
+        seen[name] = true;
+        result.push(name);
+    }
+    return result;
+}
+
+function rebaseOwnedPath(sourceRoot: string, targetRoot: string, name: string | undefined): string | undefined {
+    if (!name) {
+        return name;
+    }
+    if (name === sourceRoot) {
+        return targetRoot;
+    }
+    if (isAncestor(sourceRoot, name)) {
+        return join(targetRoot, name.slice(sourceRoot.length + 1));
+    }
+    return name;
+}
+
+function rebaseModelPath(sourceRoot: string, modelRoot: string, name: string | undefined): string | undefined {
+    if (!name) {
+        return name;
+    }
+    if (name === sourceRoot) {
+        return modelRoot;
+    }
+    if (isAncestor(sourceRoot, name)) {
+        return join(modelRoot, name.slice(sourceRoot.length + 1));
+    }
+    return name;
+}
+
+function rebasePathList(sourceRoot: string, targetRoot: string, names: string[]): string[] {
+    var result: string[] = [];
+    for (var i = 0; i < names.length; i++) {
+        var rebased = rebaseOwnedPath(sourceRoot, targetRoot, names[i]);
+        if (rebased) {
+            result.push(rebased);
+        }
+    }
+    return result;
+}
+
+function rebaseEventName(model: Model, machine: Model, eventName: string): string {
+    var event = machine.events[eventName];
+    if (event && (isKind(event.kind, kinds.ChangeEvent) || isKind(event.kind, kinds.CallEvent))) {
+        return rebaseModelPath(machine.qualifiedName, model.qualifiedName, eventName) || eventName;
+    }
+    return rebaseOwnedPath(machine.qualifiedName, "", eventName) === eventName
+        ? eventName
+        : rebaseOwnedPath(machine.qualifiedName, "", eventName)!.replace(/^\//, "");
+}
+
+function rebaseSubmachineEventName(model: Model, machine: Model, stateRoot: string, eventName: string): string {
+    var event = machine.events[eventName];
+    if (event && (isKind(event.kind, kinds.ChangeEvent) || isKind(event.kind, kinds.CallEvent))) {
+        return rebaseModelPath(machine.qualifiedName, model.qualifiedName, eventName) || eventName;
+    }
+    return rebaseOwnedPath(machine.qualifiedName, stateRoot, eventName) || eventName;
+}
+
+function rebaseTransitionPaths(
+    sourceRoot: string,
+    targetRoot: string,
+    paths: Record<Path, TransitionPath>,
+): Record<Path, TransitionPath> {
+    var rebased: Record<Path, TransitionPath> = {};
+    for (var current in paths) {
+        var rebasedCurrent = rebaseOwnedPath(sourceRoot, targetRoot, current);
+        if (!rebasedCurrent) {
+            continue;
+        }
+        rebased[rebasedCurrent] = {
+            enter: rebasePathList(sourceRoot, targetRoot, paths[current].enter),
+            exit: rebasePathList(sourceRoot, targetRoot, paths[current].exit),
+        };
+    }
+    return rebased;
+}
+
+function copySubmachine(model: Model, state: State, machine: Model): void {
+    var sourceRoot = machine.qualifiedName;
+    var targetRoot = state.qualifiedName;
+    state.initial = rebaseOwnedPath(sourceRoot, targetRoot, machine.initial) || "";
+    state.transitions.push(...rebasePathList(sourceRoot, targetRoot, machine.transitions));
+    state.deferred.push(...machine.deferred.map(function (eventName) {
+        return rebaseSubmachineEventName(model, machine, targetRoot, eventName);
+    }));
+
+    for (var attributeName in machine.attributes) {
+        var attribute = machine.attributes[attributeName];
+        var qualifiedName = rebaseModelPath(sourceRoot, model.qualifiedName, attribute.qualifiedName);
+        if (!qualifiedName) {
+            continue;
+        }
+        model.attributes[qualifiedName] = {
+            ...attribute,
+            kind: kinds.Attribute,
+            qualifiedName,
+        };
+        var existingAttributeMember = model.members[qualifiedName];
+        if (existingAttributeMember && !isKind(existingAttributeMember.kind, kinds.Attribute)) {
+            throw new Error("attribute '" + qualifiedName + "' conflicts with existing model member");
+        }
+        model.members[qualifiedName] = model.attributes[qualifiedName];
+    }
+
+    for (var operationName in machine.operations) {
+        var operation = machine.operations[operationName];
+        var qualifiedName = rebaseModelPath(sourceRoot, model.qualifiedName, operation.qualifiedName);
+        if (!qualifiedName) {
+            continue;
+        }
+        model.operations[qualifiedName] = {
+            ...operation,
+            kind: kinds.Operation,
+            qualifiedName,
+        };
+        var existingOperationMember = model.members[qualifiedName];
+        if (existingOperationMember && !isKind(existingOperationMember.kind, kinds.Operation)) {
+            throw new Error("operation '" + qualifiedName + "' conflicts with existing model member");
+        }
+        model.members[qualifiedName] = model.operations[qualifiedName];
+    }
+
+    for (var eventName in machine.events) {
+        var event = machine.events[eventName];
+        var rebasedEventName = rebaseSubmachineEventName(model, machine, targetRoot, eventName);
+        model.events[rebasedEventName] = {
+            ...event,
+            name: rebasedEventName,
+            qualifiedName: rebaseSubmachineEventName(model, machine, targetRoot, event.qualifiedName || eventName),
+            source: event.source ? rebaseSubmachineEventName(model, machine, targetRoot, event.source) : event.source,
+            target: event.target ? rebaseSubmachineEventName(model, machine, targetRoot, event.target) : event.target,
+        };
+    }
+
+    for (var qualifiedName in machine.members) {
+        if (qualifiedName === sourceRoot) {
+            continue;
+        }
+        var member = machine.members[qualifiedName];
+        var rebasedName = rebaseOwnedPath(sourceRoot, targetRoot, qualifiedName);
+        if (!rebasedName) {
+            continue;
+        }
+        if (isTransitionElement(member)) {
+            model.members[rebasedName] = {
+                ...member,
+                qualifiedName: rebasedName,
+                source: rebaseOwnedPath(sourceRoot, targetRoot, member.source) || member.source,
+                target: rebaseOwnedPath(sourceRoot, targetRoot, member.target) || member.target,
+                events: member.events.map(function (eventName) {
+                    return rebaseSubmachineEventName(model, machine, targetRoot, eventName);
+                }),
+                effect: rebasePathList(sourceRoot, targetRoot, member.effect),
+                guard: rebaseOwnedPath(sourceRoot, targetRoot, member.guard) || member.guard,
+                paths: rebaseTransitionPaths(sourceRoot, targetRoot, member.paths),
+            };
+        } else if (isStateElement(member)) {
+            model.members[rebasedName] = {
+                ...member,
+                qualifiedName: rebasedName,
+                transitions: rebasePathList(sourceRoot, targetRoot, member.transitions),
+                entry: rebasePathList(sourceRoot, targetRoot, member.entry),
+                exit: rebasePathList(sourceRoot, targetRoot, member.exit),
+                activities: rebasePathList(sourceRoot, targetRoot, member.activities),
+                deferred: member.deferred.map(function (eventName) {
+                    return rebaseSubmachineEventName(model, machine, targetRoot, eventName);
+                }),
+                initial: rebaseOwnedPath(sourceRoot, targetRoot, member.initial) || "",
+            };
+        } else if (isBehaviorElement(member)) {
+            model.members[rebasedName] = {
+                ...member,
+                qualifiedName: rebasedName,
+                operationName: rebaseModelPath(sourceRoot, model.qualifiedName, member.operationName) || member.operationName,
+                Owner: member.Owner
+                    ? function (name = rebasedName) {
+                        return dirname(name);
+                    }
+                    : member.Owner,
+            };
+        } else if (isConstraintElement(member)) {
+            model.members[rebasedName] = {
+                ...member,
+                qualifiedName: rebasedName,
+            };
+        } else if (isVertex(member)) {
+            model.members[rebasedName] = {
+                ...member,
+                qualifiedName: rebasedName,
+                transitions: rebasePathList(sourceRoot, targetRoot, member.transitions),
+            };
+        }
+    }
+}
+
 
 function registerEvent(model: Model, event: EventRecord): EventRecord {
     if (!model.events) {
@@ -2381,20 +3339,6 @@ function coerceTimepoint(value: unknown): number {
     return coerceDuration(value);
 }
 
-function matchesDefaultRuntimeType(defaultValue: unknown, value: unknown): boolean {
-    if (defaultValue === null || value === null) {
-        return defaultValue === null && value === null;
-    }
-    var defaultType = typeof defaultValue;
-    if (typeof value !== defaultType) {
-        return false;
-    }
-    if (defaultType !== "object") {
-        return true;
-    }
-    return Object.getPrototypeOf(value) === Object.getPrototypeOf(defaultValue);
-}
-
 function isRuntimeTypeToken(value: unknown): value is Function {
     return typeof value === "function";
 }
@@ -2428,6 +3372,31 @@ function matchesRuntimeTypeToken(type: unknown, value: unknown): boolean {
     return prototype === undefined
         ? value instanceof type
         : Object.getPrototypeOf(value) === prototype;
+}
+
+function inferRuntimeTypeToken(value: unknown): Function | undefined {
+    if (value === undefined || value === null) {
+        return undefined;
+    }
+    if (Array.isArray(value)) {
+        return Array;
+    }
+    switch (typeof value) {
+        case "string":
+            return String;
+        case "number":
+            return Number;
+        case "boolean":
+            return Boolean;
+        case "bigint":
+            return BigInt;
+        case "symbol":
+            return Symbol;
+        case "object":
+            return (value as object).constructor;
+        default:
+            return undefined;
+    }
 }
 
 function freezeSnapshotObject<T extends object>(value: T): Readonly<T> {
@@ -2599,15 +3568,25 @@ function freezeSnapshotEvents(events: SnapshotEvent[]): Snapshot["events"] {
     return freezeSnapshotObject(events);
 }
 
+function freezeSnapshotTransitions(transitions: TransitionSnapshot[]): Snapshot["transitions"] {
+    for (var i = 0; i < transitions.length; i++) {
+        freezeSnapshotObject(transitions[i].events as string[]);
+        freezeSnapshotObject(transitions[i]);
+    }
+    return freezeSnapshotObject(transitions);
+}
+
 function makeSnapshot(
     id: string,
     qualifiedName: string,
     state: string,
     attributes: Snapshot["attributes"],
     queueLen: number,
-    events: Snapshot["events"],
+    transitions: Snapshot["transitions"],
+    events?: Snapshot["events"],
     extra?: Record<string, unknown>,
 ): Snapshot {
+    var snapshotEvents = events || freezeSnapshotEvents([]);
     return freezeSnapshotObject({
         id,
         ID: id,
@@ -2619,10 +3598,66 @@ function makeSnapshot(
         Attributes: attributes,
         queueLen,
         QueueLen: queueLen,
-        events,
-        Events: events,
+        transitions,
+        Transitions: transitions,
+        events: snapshotEvents,
+        Events: snapshotEvents,
         ...(extra || {}),
     });
+}
+
+function makeTransitionSnapshot(transition: Transition, model: Model): TransitionSnapshot {
+    var events = freezeSnapshotObject(transition.events.slice());
+    var kind = transition.kind;
+    if (isKind(kind, kinds.External)) {
+        kind = 67343;
+    } else if (isKind(kind, kinds.Self)) {
+        kind = 67344;
+    } else if (isKind(kind, kinds.Internal)) {
+        kind = 67345;
+    } else if (isKind(kind, kinds.Local)) {
+        kind = 67346;
+    }
+    var guarded = !!transition.guard;
+    for (var i = 0; i < transition.events.length; i++) {
+        var event = model.events[transition.events[i]];
+        if (event && isKind(event.kind, kinds.TimeEvent)) {
+            guarded = true;
+            break;
+        }
+    }
+    return {
+        name: transition.qualifiedName,
+        Name: transition.qualifiedName,
+        kind: kind,
+        Kind: kind,
+        source: transition.source,
+        Source: transition.source,
+        target: transition.target,
+        Target: transition.target,
+        events,
+        Events: events,
+        guard: guarded,
+        Guard: guarded,
+    };
+}
+
+function makeEventSnapshot(
+    transition: Transition,
+    eventName: string,
+    schema: unknown,
+): SnapshotEvent {
+    return {
+        event: eventName,
+        Name: eventName,
+        Kind: kinds.Event,
+        target: transition.target,
+        Target: transition.target,
+        guard: !!transition.guard,
+        Guard: !!transition.guard,
+        schema,
+        Schema: schema,
+    };
 }
 
 function cloneEventForDispatch(event: EventRecord): EventRecord {
@@ -2642,8 +3677,38 @@ function cloneEventForDispatch(event: EventRecord): EventRecord {
     if ("data" in event) {
         copy.data = event.data;
     }
-    if (!copy.kind) {
-        copy.kind = kinds.Event;
+    var name = copy.name === undefined ? copy.Name : copy.name;
+    if (name !== undefined) {
+        copy.name = name;
+        copy.Name = copy.Name === undefined ? name : copy.Name;
+    }
+    var kind = copy.kind === undefined ? copy.Kind : copy.kind;
+    copy.kind = kind === undefined ? kinds.Event : kind;
+    copy.Kind = copy.Kind === undefined ? copy.kind : copy.Kind;
+    var source = copy.source === undefined ? copy.Source : copy.source;
+    if (source !== undefined) {
+        copy.source = source;
+        copy.Source = copy.Source === undefined ? source : copy.Source;
+    }
+    var target = copy.target === undefined ? copy.Target : copy.target;
+    if (target !== undefined) {
+        copy.target = target;
+        copy.Target = copy.Target === undefined ? target : copy.Target;
+    }
+    var id = copy.id === undefined ? copy.ID : copy.id;
+    if (id !== undefined) {
+        copy.id = id;
+        copy.ID = copy.ID === undefined ? id : copy.ID;
+    }
+    var qualifiedName = copy.qualifiedName === undefined ? copy.QualifiedName : copy.qualifiedName;
+    if (qualifiedName !== undefined) {
+        copy.qualifiedName = qualifiedName;
+        copy.QualifiedName = copy.QualifiedName === undefined ? qualifiedName : copy.QualifiedName;
+    }
+    var schema = copy.schema === undefined ? copy.Schema : copy.schema;
+    if (schema !== undefined) {
+        copy.schema = schema;
+        copy.Schema = copy.Schema === undefined ? schema : copy.Schema;
     }
     return copy as EventRecord;
 }
@@ -2776,6 +3841,10 @@ export class Queue {
         this.context = context || new Context();
     }
 
+    setContext(context: Context): void {
+        this.context = context;
+    }
+
     len(): number | Error {
         if (this.fifo) {
             const lenOrError = "Len" in this.fifo
@@ -2839,6 +3908,167 @@ function isQueueError(value: unknown): boolean {
 }
 
 
+function finalizeTransitionKind(model: Model, transition: Transition): void {
+    if (transition.kind !== kinds.Transition) {
+        return;
+    }
+    var targetElement = getVertex(model, transition.target);
+    if (
+        targetElement &&
+        isKind(targetElement.kind, kinds.EntryPoint) &&
+        transition.source === dirname(targetElement.qualifiedName)
+    ) {
+        transition.kind = kinds.External;
+    } else if (transition.target === transition.source) {
+        transition.kind = kinds.Self;
+    } else if (!transition.target) {
+        transition.kind = kinds.Internal;
+    } else if (isAncestor(transition.source, transition.target)) {
+        transition.kind = kinds.Local;
+    } else {
+        transition.kind = kinds.External;
+    }
+}
+
+function finalizeEnterPath(model: Model, lcaPath: string, target: string | undefined): string[] {
+    var enter: string[] = [];
+    var entering = target;
+    while (
+        entering &&
+        entering !== lcaPath &&
+        entering !== model.qualifiedName &&
+        entering !== ""
+    ) {
+        enter.unshift(entering);
+        entering = dirname(entering);
+    }
+    return enter;
+}
+
+function finalizeExitPath(lcaPath: string, current: string): string[] {
+    var exit: string[] = [];
+    var exiting = current;
+    while (exiting && exiting !== lcaPath && exiting !== "." && exiting !== "/") {
+        exit.push(exiting);
+        exiting = dirname(exiting);
+    }
+    return exit;
+}
+
+function finalizeCurrentVerticesFor(model: Model, source: Vertex): string[] {
+    if (isKind(source.kind, kinds.Initial)) {
+        return [dirname(source.qualifiedName)];
+    }
+    if (isKind(source.kind, kinds.Choice, kinds.Junction)) {
+        return [source.qualifiedName];
+    }
+    var current: string[] = [];
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (
+            isVertex(member) &&
+            (
+                qualifiedName === source.qualifiedName ||
+                isAncestor(source.qualifiedName, qualifiedName)
+            )
+        ) {
+            current.push(qualifiedName);
+        }
+    }
+    return current;
+}
+
+function finalizeTransitionPathForCurrent(
+    model: Model,
+    current: string,
+    transition: Transition,
+): TransitionPath {
+    if (!transition.target) {
+        return EMPTY_PATH;
+    }
+    var source = getVertex(model, transition.source);
+    if (source && isKind(source.kind, kinds.ExitPoint) && transition.target === dirname(source.qualifiedName)) {
+        return EMPTY_PATH;
+    }
+    if (source && isKind(source.kind, kinds.EntryPoint)) {
+        var sourceBoundary = dirname(source.qualifiedName);
+        var sourceBoundaryElement = model.members[sourceBoundary];
+        if (!(sourceBoundaryElement && isStateElement(sourceBoundaryElement) && isKind(sourceBoundaryElement.kind, kinds.SubmachineState))) {
+            sourceBoundary = dirname(sourceBoundary);
+        }
+        return {
+            enter: finalizeEnterPath(model, dirname(sourceBoundary), transition.target),
+            exit: [],
+        };
+    }
+    var target = getVertex(model, transition.target);
+    if (target && isKind(target.kind, kinds.EntryPoint)) {
+        var targetBoundary = dirname(target.qualifiedName);
+        var targetBoundaryElement = model.members[targetBoundary];
+        if (!(targetBoundaryElement && isStateElement(targetBoundaryElement) && isKind(targetBoundaryElement.kind, kinds.SubmachineState))) {
+            targetBoundary = dirname(targetBoundary);
+        }
+        var entryLca = isKind(transition.kind, kinds.Self)
+            ? dirname(transition.source)
+            : lca(current, targetBoundary);
+        if (isKind(transition.kind, kinds.Self) && source && isKind(source.kind, kinds.ExitPoint)) {
+            entryLca = dirname(targetBoundary);
+        }
+        if (isKind(transition.kind, kinds.External) && transition.source === targetBoundary) {
+            entryLca = dirname(targetBoundary);
+        }
+        return {
+            enter: [transition.target],
+            exit: finalizeExitPath(entryLca, current),
+        };
+    }
+    var lcaPath = isKind(transition.kind, kinds.Self)
+        ? dirname(transition.source)
+        : lca(current, transition.target);
+    if (
+        isKind(transition.kind, kinds.Local) &&
+        target &&
+        isStateElement(target) &&
+        isKind(target.kind, kinds.SubmachineState) &&
+        isAncestor(target.qualifiedName, current)
+    ) {
+        lcaPath = dirname(target.qualifiedName);
+    }
+    return {
+        enter: finalizeEnterPath(model, lcaPath, transition.target),
+        exit: finalizeExitPath(lcaPath, current),
+    };
+}
+
+function buildTransitionPaths(model: Model): void {
+    for (var qualifiedName in model.members) {
+        var transition = model.members[qualifiedName];
+        if (!isTransitionElement(transition)) {
+            continue;
+        }
+        transition.paths = {};
+        finalizeTransitionKind(model, transition);
+        var source = getVertex(model, transition.source);
+        if (!source) {
+            continue;
+        }
+        var currentVertices = finalizeCurrentVerticesFor(model, source);
+        for (var i = 0; i < currentVertices.length; i++) {
+            var current = currentVertices[i];
+            transition.paths[current] = finalizeTransitionPathForCurrent(model, current, transition);
+        }
+    }
+}
+
+function finalizeTransitionKinds(model: Model): void {
+    for (var qualifiedName in model.members) {
+        var transition = model.members[qualifiedName];
+        if (isTransitionElement(transition)) {
+            finalizeTransitionKind(model, transition);
+        }
+    }
+}
+
 function buildTransitionTable(model: Model): void {
 
     // For each state in the model
@@ -2855,6 +4085,7 @@ function buildTransitionTable(model: Model): void {
         var currentPath =
 (stateName);
         var depth = 0;
+        var shadowedEvents: Record<string, boolean> = {};
 
         while (currentPath) {
             var currentState = model.members[currentPath];
@@ -2867,25 +4098,41 @@ function buildTransitionTable(model: Model): void {
  (model.members[transitionName]);
 
                     if (isTransitionElement(transition) && transition.events) {
-                        // Process each event this transition handles
-                        for (var j = 0; j < transition.events.length; j++) {
-                            var transitionEventName = (transition.events[j]);
+	                        // Process each event this transition handles
+	                        for (var j = 0; j < transition.events.length; j++) {
+	                            var transitionEventName = (transition.events[j]);
 
-                            // Skip wildcard events - not supported
-                            if (transitionEventName.indexOf('*') !== -1) {
+		                            if (
+		                                dirname(transition.qualifiedName) !== currentPath &&
+		                                stateOrModel.deferred.indexOf(transitionEventName) !== -1 &&
+		                                !transitionHandlesAtOrBelow(transition, currentPath, model.qualifiedName)
+		                            ) {
+		                                continue;
+		                            }
+	                            if (!transitionsByEvent[transitionEventName]) {
+	                                if (shadowedEvents[transitionEventName]) {
+	                                    continue;
+                                }
+                                if (!transition.paths[stateName]) {
+                                    continue;
+                                }
+                                transitionsByEvent[transitionEventName] = [];
+                            }
+                            if (shadowedEvents[transitionEventName]) {
                                 continue;
                             }
-
-                            // Regular event - add to lookup table
-                        if (!transitionsByEvent[transitionEventName]) {
-                                transitionsByEvent[transitionEventName] = [];
+                            if (!transition.paths[stateName]) {
+                                continue;
                             }
                             transitionsByEvent[transitionEventName].push({
                                 transition,
                                 priority: depth,
                             });
-                        }
-                    }
+	                    }
+	                }
+                }
+                for (var deferredIndex = 0; deferredIndex < stateOrModel.deferred.length; deferredIndex++) {
+                    shadowedEvents[stateOrModel.deferred[deferredIndex]] = true;
                 }
             }
 
@@ -2914,6 +4161,20 @@ function buildTransitionTable(model: Model): void {
 }
 
 
+function transitionDeclaredAtOrBelow(transition: Transition, owner: string): boolean {
+    const transitionOwner = dirname(transition.qualifiedName);
+    return transitionOwner === owner || isAncestor(owner, transitionOwner);
+}
+
+function transitionHandlesAtOrBelow(transition: Transition, owner: string, modelRoot: string): boolean {
+    return (
+        (transition.source === owner && dirname(owner) === modelRoot) ||
+        isAncestor(owner, transition.source) ||
+        transitionDeclaredAtOrBelow(transition, owner)
+    );
+}
+
+
 function buildDeferredTable(model: Model): void {
     // For each state in the model
     for (var stateName in model.members) {
@@ -2934,15 +4195,15 @@ function buildDeferredTable(model: Model): void {
                 if (stateOrModel.deferred) {
                     for (var i = 0; i < stateOrModel.deferred.length; i++) {
                         var deferredEvent = stateOrModel.deferred[i];
-                        var transitions = model.transitionMap[stateName][deferredEvent];
-                        if (transitions && transitions.some(t => t.source === stateName)) {
-                            continue;
-                        }
-                        // Only support exact event names for O(1) lookup
-                        // Skip wildcard patterns for performance
-                        if (deferredEvent.indexOf('*') === -1) {
-                            model.deferredMap[stateName][deferredEvent] = true;
-                        }
+	                        var transitions = model.transitionMap[stateName][deferredEvent];
+	                        if (transitions && transitions.some(function (transition) { return !transition.guard; })) {
+	                            continue;
+	                        }
+	                        // Only support exact event names for O(1) lookup
+	                        // Skip wildcard patterns for performance
+	                        if (deferredEvent.indexOf('*') === -1) {
+	                            model.deferredMap[stateName][deferredEvent] = currentPath;
+	                        }
                     }
                 }
             }
@@ -2956,6 +4217,80 @@ function buildDeferredTable(model: Model): void {
     }
 }
 
+function buildHistoryTables(model: Model): void {
+    var historyByOwner: Record<Path, Vertex[]> = {};
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (!isVertex(member) || !isKind(member.kind, kinds.ShallowHistory, kinds.DeepHistory)) {
+            continue;
+        }
+        var owner = dirname(member.qualifiedName);
+        if (!historyByOwner[owner]) {
+            historyByOwner[owner] = [];
+        }
+        historyByOwner[owner].push(member);
+    }
+
+    for (var ownerName in historyByOwner) {
+        model.historyPaths[ownerName] = {};
+        for (var rememberedName in model.members) {
+            var remembered = model.members[rememberedName];
+            if (!isStateElement(remembered) || remembered.qualifiedName === ownerName) {
+                continue;
+            }
+            if (!isAncestor(ownerName, remembered.qualifiedName)) {
+                continue;
+            }
+            var enterPath: Path[] = [];
+            var current = remembered.qualifiedName;
+            while (current && current !== ownerName && current !== ".") {
+                enterPath.unshift(current);
+                current = dirname(current);
+            }
+            model.historyPaths[ownerName][remembered.qualifiedName] = enterPath;
+        }
+    }
+
+    var skipOwners: string[] = [""];
+    for (var skipOwner in historyByOwner) {
+        skipOwners.push(skipOwner);
+    }
+    for (var stateName in model.members) {
+        var state = model.members[stateName];
+        if (!isStateElement(state)) {
+            continue;
+        }
+        for (var skipIndex = 0; skipIndex < skipOwners.length; skipIndex++) {
+            var skipOwner = skipOwners[skipIndex];
+            var historyTargets: Record<Path, Path> = {};
+            var child = state.qualifiedName;
+            var parent = dirname(child);
+            while (parent && parent !== "." && parent !== "/") {
+                var parentElement = model.members[parent];
+                if (parent !== skipOwner && parentElement && isKind(parentElement.kind, kinds.State)) {
+                    var histories = historyByOwner[parent];
+                    if (histories) {
+                        for (var historyIndex = 0; historyIndex < histories.length; historyIndex++) {
+                            var history = histories[historyIndex];
+                            historyTargets[history.qualifiedName] = isKind(history.kind, kinds.ShallowHistory)
+                                ? child
+                                : state.qualifiedName;
+                        }
+                    }
+                }
+                if (parent === model.qualifiedName) {
+                    break;
+                }
+                child = parent;
+                parent = dirname(parent);
+            }
+            if (Object.keys(historyTargets).length) {
+                model.historyTargets[state.qualifiedName + "\n" + skipOwner] = historyTargets;
+            }
+        }
+    }
+}
+
 
 var EMPTY_PATH = {
     enter: [],
@@ -2963,31 +4298,42 @@ var EMPTY_PATH = {
 };
 
 
-interface Instance {
-    _hsm: HSM | null;
-    dispatch(event: EventRecord): Completion;
-    state(): string;
-    context(): Context;
-    clock(): Required<ClockConfig>;
-    get(name: string): unknown;
-    set(name: string, value: unknown): Completion;
-    call(name: string, ...args: unknown[]): unknown;
-    restart(data?: unknown): void;
-    takeSnapshot(): Snapshot;
-}
+export class Instance {
+    _hsm: HSM | null = null;
 
-class InstanceImpl {
-    dispatch(event: EventRecord): Completion {
+    dispatch(event: EventRecord): Completion;
+    dispatch(ctx: Context, event: EventRecord): Completion;
+    dispatch(ctxOrEvent: Context | EventRecord, maybeEvent?: EventRecord): Completion {
         var runtime = runtimeFor(this);
         if (!runtime) {
-            return Promise.resolve();
+            return errorCompletion(new Error("dispatch requires a started HSM"));
         }
-        return runtime.dispatch(event);
+        var ctx = ctxOrEvent instanceof Context ? ctxOrEvent : this.context();
+        var event = ctxOrEvent instanceof Context ? maybeEvent : ctxOrEvent;
+        if (!event) {
+            return errorCompletion(new Error("dispatch requires an event"));
+        }
+        return runtime.dispatch(
+            ctx,
+            eventForRecipient(event, dispatchSourceFromContext(ctx), runtime.id),
+        );
+    }
+
+    Dispatch(event: EventRecord): Completion;
+    Dispatch(ctx: Context, event: EventRecord): Completion;
+    Dispatch(ctxOrEvent: Context | EventRecord, maybeEvent?: EventRecord): Completion {
+        return maybeEvent === undefined
+            ? this.dispatch(ctxOrEvent as EventRecord)
+            : this.dispatch(ctxOrEvent as Context, maybeEvent);
     }
 
     state(): string {
         var runtime = runtimeFor(this);
         return runtime ? runtime.state() : "";
+    }
+
+    State(): string {
+        return this.state();
     }
 
     context(): Context {
@@ -3000,9 +4346,27 @@ class InstanceImpl {
         return runtime ? runtime.clock : (DefaultClock as Required<ClockConfig>);
     }
 
-    get(name: string): unknown {
+    start(ctx?: Context, data?: unknown): Promise<this> {
         var runtime = runtimeFor(this);
-        return runtime ? runtime.get(name) : undefined;
+        if (!runtime) {
+            return Promise.reject(new Error("start requires an initialized instance"));
+        }
+        return runtime.start(ctx || this.context(), data).then((instance) => {
+            return instance as this;
+        });
+    }
+
+    Start(ctx?: Context, data?: unknown): Promise<this> {
+        return this.start(ctx, data);
+    }
+
+    get(name: string): AttributeRead {
+        var runtime = runtimeFor(this);
+        return runtime ? runtime.get(name) : [undefined, false];
+    }
+
+    Get(name: string): AttributeRead {
+        return this.get(name);
     }
 
     set(name: string, value: unknown): Completion {
@@ -3010,45 +4374,60 @@ class InstanceImpl {
         if (runtime) {
             return runtime.set(name, value);
         }
-        return Promise.resolve();
+        return errorCompletion(new Error("set requires a started HSM"));
     }
 
-    call(name: string, ...args: unknown[]): unknown {
+    Set(name: string, value: unknown): Completion {
+        return this.set(name, value);
+    }
+
+    call(name: string, ...args: unknown[]): Promise<unknown> {
         var runtime = runtimeFor(this);
         if (!runtime) {
-            return undefined;
+            return errorCompletion(new Error("operation requires a started HSM"));
         }
         return runtime.call(name, ...args);
     }
 
-    restart(data?: unknown): void {
+    Call(name: string, ...args: unknown[]): Promise<unknown> {
+        return this.call(name, ...args);
+    }
+
+    restart(data?: unknown): Completion {
         var runtime = runtimeFor(this);
         if (runtime) {
-            runtime.restart(data);
+            return runtime.restart(data);
         }
+        return errorCompletion(new Error("restart requires a started HSM"));
+    }
+
+    Restart(data?: unknown): Completion {
+        return this.restart(data);
+    }
+
+    stop(): Completion {
+        var runtime = runtimeFor(this);
+        if (runtime) {
+            return runtime.stop();
+        }
+        return Promise.resolve();
+    }
+
+    Stop(): Completion {
+        return this.stop();
     }
 
     takeSnapshot(): Snapshot {
         var runtime = runtimeFor(this);
         return runtime
             ? runtime.takeSnapshot()
-            : makeSnapshot("", "", "", freezeSnapshotObject({}), 0, freezeSnapshotEvents([]));
+            : makeSnapshot("", "", "", freezeSnapshotObject({}), 0, freezeSnapshotTransitions([]), freezeSnapshotEvents([]));
+    }
+
+    TakeSnapshot(): Snapshot {
+        return this.takeSnapshot();
     }
 }
-
-type InstanceConstructor = {
-    new (): Instance;
-    (this: Instance): void;
-    prototype: Instance;
-};
-
-export const Instance = (function (this: Instance) {
-    if (this && typeof this === "object") {
-        (this as Instance)._hsm = null;
-    }
-}) as InstanceConstructor;
-
-(Instance.prototype as unknown as InstanceImpl) = InstanceImpl.prototype;
 
 class HSM {
     static id = 0;
@@ -3064,8 +4443,7 @@ class HSM {
     private id: string;
     private name: string;
     private attributes: Record<string, unknown>;
-    private historyShallow: Record<string, string>;
-    private historyDeep: Record<string, string>;
+    private history: Record<string, string>;
     private after: Record<AfterBucket, Record<string, Array<() => void>>>;
     private clock: {
         setTimeout: TimerFunction;
@@ -3087,6 +4465,11 @@ class HSM {
             ctxOrInstance = new Context();
         }
 
+        var existing = runtimeFor(instanceOrModel);
+        if (existing && existing.state() !== existing.model.qualifiedName) {
+            throw new Error("instance already has a running HSM");
+        }
+
         const runtimeID = configID(maybeConfig);
         const runtimeName = configName(maybeConfig);
         const runtimeClock = configClock(maybeConfig);
@@ -3106,8 +4489,7 @@ class HSM {
         this.id = id;
         this.name = name;
         this.attributes = {};
-        this.historyShallow = {};
-        this.historyDeep = {};
+        this.history = {};
         this.after = {
             entered: {},
             exited: {},
@@ -3123,14 +4505,17 @@ class HSM {
         this.startData = configData(maybeConfig);
 
         this.runtime = {
-            dispatch: (event) => {
-                return this.dispatch(event);
+            dispatch: (ctx, event) => {
+                return this.dispatch(ctx, event);
+            },
+            start: (ctx, data) => {
+                return this.start(ctx, data);
             },
             state: () => {
                 return this.state();
             },
             context: () => {
-                return this.ctx as unknown as ActiveContext;
+                return this.ctx;
             },
             clock: this.clock,
             get: (name) => {
@@ -3146,16 +4531,16 @@ class HSM {
                 return this.call(name, ...args);
             },
             restart: (data) => {
-                this.restart(data);
+                return this.restart(data);
             },
             takeSnapshot: () => {
                 return this.takeSnapshot();
             },
             onAfter: (bucket, key, listener) => {
-                this.onAfter(bucket, key, listener);
+                return this.onAfter(bucket, key, listener);
             },
             stop: () => {
-                this.stop();
+                return this.stop();
             },
             id: this.id,
             model: this.model,
@@ -3163,21 +4548,44 @@ class HSM {
             queue: this.queue,
             processing: this.processing,
         };
+        bindRuntime(this.instance, this.runtime);
     }
 
-    start(): this {
+    start(ctx?: Context, data?: unknown): Promise<Instance> {
+        if (this.currentState.qualifiedName !== this.model.qualifiedName || this.processing) {
+            return Promise.reject(new Error("already started HSM"));
+        }
+        var parentContext = parentContextForStart(ctx || this.ctx, this.instance);
+        var maybeInstances = parentContext.Value(Keys.Instances);
+        var instances = maybeInstances && typeof maybeInstances === "object"
+            ? maybeInstances as Record<string, Instance>
+            : {};
+        instances[this.id] = this.instance;
+        var owner = parentContext.Value(Keys.HSM);
+        var startedContext = new Context(parentContext, new Map<unknown, unknown>([
+            [Keys.Instances, instances],
+            [Keys.HSM, this.instance],
+            [Keys.Owner, owner],
+        ]));
+        this.ctx = startedContext;
+        if (isDispatchable(owner)) {
+            contextOwner.set(this.ctx, owner);
+        }
+        contextHSM.set(this.ctx, this.instance);
+        this.queue.setContext(this.ctx);
+        if (data !== undefined) {
+            this.startData = data;
+        }
         this.processing = true;
-        this.ctx.done = false;
-        bindRuntime(this.instance, this.runtime);
         this.resetAttributes();
+        this.history = {};
 
         var initialEvent = Object.create(InitialEvent);
         initialEvent.data = this.startData;
         var newState = this.enter(this.model, initialEvent, true);
-        this.ctx.instances[this.id] = this.instance;
         this.currentState = newState;
         this.process();
-        return this;
+        return Promise.resolve(this.instance);
     }
 
     state(): string {
@@ -3192,9 +4600,122 @@ class HSM {
         for (var qualifiedName in this.model.attributes) {
             var attribute = this.model.attributes[qualifiedName];
             if (attribute && attribute.hasDefault) {
-                this.attributes[qualifiedName] = attribute.defaultValue;
+                this.attributes[qualifiedName] = cloneRuntimeValue(attribute.defaultValue);
             }
         }
+    }
+
+    private reconcileActiveActivities(stateName: string, event: EventRecord): void {
+        var activeStates: Record<string, boolean> = {};
+        var states: State[] = [];
+        var current = stateName;
+        var firedOneShotActivity = this.firedOneShotActivityName(event);
+        while (current && current !== "." && current !== "/") {
+            var state = getState(this.model, current);
+            if (state) {
+                activeStates[state.qualifiedName] = true;
+                states.unshift(state);
+            }
+            if (current === this.model.qualifiedName) {
+                break;
+            }
+            current = dirname(current);
+        }
+
+        for (var activeName in this.active) {
+            var owner = dirname(activeName);
+            if (activeStates[owner]) {
+                continue;
+            }
+            var inactiveBehavior = getBehavior(this.model, activeName);
+            if (inactiveBehavior) {
+                this.terminate(inactiveBehavior);
+            } else {
+                this.active[activeName].context.cancel();
+                delete this.active[activeName];
+            }
+        }
+
+        for (var stateIndex = 0; stateIndex < states.length; stateIndex++) {
+            var activeState = states[stateIndex];
+            for (var activityIndex = 0; activityIndex < activeState.activities.length; activityIndex++) {
+                var activityName = activeState.activities[activityIndex];
+                if (this.active[activityName]) {
+                    continue;
+                }
+                if (activityName === firedOneShotActivity) {
+                    continue;
+                }
+                var activity = getBehavior(this.model, activityName);
+                if (activity) {
+                    this.execute(activity, event);
+                }
+            }
+        }
+    }
+
+    private firedOneShotActivityName(event: EventRecord): string | undefined {
+        if (!isKind(event.kind, kinds.TimeEvent)) {
+            return undefined;
+        }
+        var transitionName = dirname(event.name);
+        var firedTransition = getTransition(this.model, transitionName);
+        var source = getState(this.model, firedTransition ? firedTransition.source : undefined);
+        if (!firedTransition || !source) {
+            return undefined;
+        }
+        var suffix = event.name.slice(transitionName.length + 1);
+        var timerIndex = 0;
+        var firedIndex = -1;
+        for (var i = 0; i < source.transitions.length; i++) {
+            var candidate = getTransition(this.model, source.transitions[i]);
+            if (!candidate) {
+                continue;
+            }
+            var hasMatchingTimerEvent = false;
+            for (var eventIndex = 0; eventIndex < candidate.events.length; eventIndex++) {
+                var candidateEventName = candidate.events[eventIndex];
+                var candidateEvent = this.model.events[candidateEventName];
+                if (
+                    candidateEvent &&
+                    isKind(candidateEvent.kind, kinds.TimeEvent) &&
+                    candidateEventName.slice(dirname(candidateEventName).length + 1) === suffix
+                ) {
+                    hasMatchingTimerEvent = true;
+                    break;
+                }
+            }
+            if (!hasMatchingTimerEvent) {
+                continue;
+            }
+            if (candidate.qualifiedName === firedTransition.qualifiedName) {
+                firedIndex = timerIndex;
+            }
+            timerIndex++;
+        }
+        if (firedIndex === -1) {
+            return undefined;
+        }
+        var activityIndex = 0;
+        for (var j = 0; j < source.activities.length; j++) {
+            var activityName = source.activities[j];
+            var isMatchingTimerActivity = suffix === "timepoint"
+                ? activityName.indexOf("/activity_at_") !== -1
+                : (
+                    activityName.indexOf("/activity_after_") !== -1 ||
+                    activityName.indexOf("/activity_every_") !== -1
+                );
+            if (!isMatchingTimerActivity) {
+                continue;
+            }
+            if (activityIndex === firedIndex) {
+                return activityName.indexOf("/activity_every_") === -1
+                    ? activityName
+                    : undefined;
+            }
+            activityIndex++;
+        }
+        return undefined;
     }
 
     private notify(bucket: AfterBucket, key: string): void {
@@ -3208,34 +4729,56 @@ class HSM {
         }
     }
 
-    onAfter(bucket: AfterBucket, key: string, listener: () => void): void {
+    onAfter(bucket: AfterBucket, key: string, listener: () => void): () => void {
         if (!this.after[bucket][key]) {
             this.after[bucket][key] = [];
         }
-        this.after[bucket][key].push(listener);
+        var listeners = this.after[bucket][key];
+        listeners.push(listener);
+        return () => {
+            var current = this.after[bucket][key];
+            if (!current) {
+                return;
+            }
+            var index = current.indexOf(listener);
+            if (index !== -1) {
+                current.splice(index, 1);
+            }
+            if (current.length === 0) {
+                delete this.after[bucket][key];
+            }
+        };
     }
 
-    private get(name: string): unknown {
-        return cloneRuntimeValue(this.attributes[qualifyModelName(this.model, name)]);
+    private get(name: string): AttributeRead {
+        var qualifiedName = qualifyModelName(this.model, name);
+        if (!this.model.attributes[qualifiedName]) {
+            return [undefined, false];
+        }
+        if (!Object.prototype.hasOwnProperty.call(this.attributes, qualifiedName)) {
+            return [undefined, false];
+        }
+        return [cloneRuntimeValue(this.attributes[qualifiedName]), true];
     }
 
     private set(name: string, value: unknown): Completion {
+        if (this.currentState.qualifiedName === this.model.qualifiedName && !this.processing) {
+            return errorCompletion(new Error("set requires a started HSM"));
+        }
         var qualifiedName = qualifyModelName(this.model, name);
         var attribute = this.model.attributes
             ? this.model.attributes[qualifiedName]
             : undefined;
         if (!attribute) {
-            return Promise.resolve();
-        }
-        if (attribute.hasDefault && !matchesDefaultRuntimeType(attribute.defaultValue, value)) {
-            return Promise.resolve();
+            return errorCompletion(new Error('missing attribute "' + name + '"'));
         }
         if (attribute.hasType && !matchesRuntimeTypeToken(attribute.valueType, value)) {
-            return Promise.resolve();
+            return errorCompletion(new Error('attribute "' + name + '" rejected value'));
         }
         var hadValue = Object.prototype.hasOwnProperty.call(this.attributes, qualifiedName);
         var old = this.attributes[qualifiedName];
-        this.attributes[qualifiedName] = value;
+        var stored = cloneRuntimeValue(value);
+        this.attributes[qualifiedName] = stored;
         if (hadValue && Object.is(old, value)) {
             return Promise.resolve();
         }
@@ -3245,14 +4788,17 @@ class HSM {
             source: qualifiedName,
             data: {
                 name: qualifiedName,
-                old: old,
-                new: value,
+                old: cloneRuntimeValue(old),
+                new: cloneRuntimeValue(stored),
             },
         };
-        return this.dispatch(event);
+        return this.dispatch(this.ctx, event);
     }
 
-    private call(name: string, ...args: unknown[]): unknown {
+    private call(name: string, ...args: unknown[]): Promise<unknown> {
+        if (this.currentState.qualifiedName === this.model.qualifiedName && !this.processing) {
+            return errorCompletion(new Error("operation requires a started HSM"));
+        }
         var argsList = args;
         var qualifiedName = qualifyModelName(this.model, name);
         var event = {
@@ -3264,8 +4810,16 @@ class HSM {
                 args: argsList,
             },
         };
-        this.dispatch(event);
-        return this.invoke(name, this.ctx, argsList);
+        var result: unknown;
+        try {
+            result = this.invoke(name, this.ctx, argsList);
+        } catch (error) {
+            return errorCompletion(error instanceof Error ? error : new Error(String(error)));
+        }
+        return Promise.resolve(result).then((value) => {
+            this.dispatch(this.ctx, event);
+            return value;
+        });
     }
 
     private invoke(name: string, ctx: Context, args: Array<unknown>): unknown {
@@ -3275,6 +4829,13 @@ class HSM {
             throw new Error('missing operation "' + qualifiedName + '"');
         }
         var fn = operation.implementation;
+        if (!fn) {
+            var methodName = operation.name;
+            var maybeMethod = (this.instance as unknown as Record<string, unknown>)[methodName];
+            if (typeof maybeMethod === "function") {
+                fn = maybeMethod as (...args: unknown[]) => unknown;
+            }
+        }
         if (typeof fn !== "function") {
             throw new Error('invalid operation "' + qualifiedName + '"');
         }
@@ -3286,26 +4847,32 @@ class HSM {
         ];
         for (var i = 0; i < candidates.length; i++) {
             var candidate = candidates[i] as Array<unknown>;
-            if (
-                fn.length === candidate.length ||
-                (fn.length <= candidate.length && fn.length >= 0)
-            ) {
+            if (fn.length === candidate.length) {
                 return fn.apply(this.instance, candidate);
             }
         }
-        return fn.apply(this.instance, args as Array<unknown>);
+        return fn.apply(this.instance, [ctx, this.instance, ...args] as Array<unknown>);
     }
 
-    restart(data?: unknown): void {
+    restart(data?: unknown): Completion {
+        if (this.currentState.qualifiedName === this.model.qualifiedName && !this.processing) {
+            return errorCompletion(new Error("restart requires a started HSM"));
+        }
         this.stop();
-        this.startData = data;
-        this.ctx.done = false;
+        if (data !== undefined) {
+            this.startData = data;
+        }
         this.currentState = this.model;
-        this.start();
+        return this.start(undefined, this.startData).then(function () {});
     }
 
     private takeSnapshot(): Snapshot {
+        if (this.currentState.qualifiedName === this.model.qualifiedName && !this.processing) {
+            throw new Error("take snapshot requires a started HSM");
+        }
         var events: SnapshotEvent[] = [];
+        var transitions: TransitionSnapshot[] = [];
+        var seenTransitions: Record<string, boolean> = {};
         var currentStateName = this.currentState
             ? this.currentState.qualifiedName
             : this.model.qualifiedName;
@@ -3317,17 +4884,12 @@ class HSM {
                 var schema = this.model.events[eventName]
                     ? this.model.events[eventName].schema
                     : undefined;
-                events.push({
-                    event: eventName,
-                    Name: eventName,
-                    Kind: kinds.Event,
-                    target: transitionList[i].target,
-                    Target: transitionList[i].target,
-                    guard: !!transitionList[i].guard,
-                    Guard: !!transitionList[i].guard,
-                    schema,
-                    Schema: schema,
-                });
+                var transition = transitionList[i];
+                if (!seenTransitions[transition.qualifiedName]) {
+                    seenTransitions[transition.qualifiedName] = true;
+                    transitions.push(makeTransitionSnapshot(transition, this.model));
+                }
+                events.push(makeEventSnapshot(transition, eventName, schema));
             }
         }
         return makeSnapshot(
@@ -3336,28 +4898,9 @@ class HSM {
             currentStateName,
             snapshotAttributes(this.attributes),
             this.len(),
+            freezeSnapshotTransitions(transitions),
             freezeSnapshotEvents(events),
         );
-    }
-
-    private recordHistory(stateName: string | undefined): void {
-        if (!stateName) {
-            return;
-        }
-        var child = stateName;
-        var parent = dirname(child);
-        while (parent && parent !== "." && parent !== "/") {
-            var element = this.model.members[parent];
-            if (element && isKind(element.kind, kinds.State)) {
-                this.historyDeep[parent] = stateName;
-                this.historyShallow[parent] = child;
-            }
-            if (parent === this.model.qualifiedName) {
-                break;
-            }
-            child = parent;
-            parent = dirname(parent);
-        }
     }
 
     private followHistoryDefault(
@@ -3372,87 +4915,182 @@ class HSM {
 	            }
 	            if (transitionCandidate.guard) {
 	                var guard = getConstraint(this.model, transitionCandidate.guard);
-	                if (guard && !guard.expression(this.ctx, this.instance, event)) {
-	                    continue;
-	                }
+	                if (guard) {
+                        var historyGuardResult = guard.expression(this.ctx, this.instance, event);
+                        if (isThenable(historyGuardResult)) {
+                            throw new Error("guard must be a synchronous function");
+                        }
+                        if (!historyGuardResult) {
+                            continue;
+                        }
+                    }
 	            }
 	            return this.transition(vertex, transitionCandidate, event);
 	        }
 	        return undefined;
 	    }
 
-    dispatch(event: EventRecord): Completion {
+    dispatch(_ctx: Context, event: EventRecord): Completion {
+        if (
+            this.currentState.qualifiedName === this.model.qualifiedName &&
+            !this.processing
+        ) {
+            return errorCompletion(new Error("dispatch requires a started HSM"));
+        }
         var dispatchEvent = cloneEventForDispatch(event);
-        this.push(dispatchEvent);
+        var pushError = this.queue.push(dispatchEvent);
+        if (pushError) {
+            this.queue.push(Object.create(ErrorEvent, {
+                data: { value: pushError },
+            }));
+        }
         this.notify("dispatched", dispatchEvent.name);
 
         if (this.processing) {
             return Promise.resolve();
         }
-        if (
-            this.currentState.qualifiedName === this.model.qualifiedName &&
-            this.ctx.done
-        ) {
-            return Promise.resolve();
-        }
         this.processing = true;
-        this.process();
+        try {
+            this.process(dispatchEvent);
+        } catch (error) {
+            this.processing = false;
+            return errorCompletion(error instanceof Error ? error : new Error(String(error)));
+        }
         return Promise.resolve();
     }
 
-    private process(): void {
-        var deferred = new Array(this.len() + 1);
+    private queueActivityWork(work: () => Completion): Completion {
+        var wasProcessing = this.processing;
+        this.processing = true;
+        var completion: Completion;
+        try {
+            completion = work();
+        } finally {
+            this.processing = wasProcessing;
+        }
+        var syncError = (completion as Completion & { __hsmError?: Error }).__hsmError;
+        if (syncError) {
+            return completion;
+        }
+        return Promise.resolve().then(() => {
+            if (this.processing) {
+                return;
+            }
+            this.processing = true;
+            try {
+                this.process();
+            } catch (error) {
+                this.processing = false;
+                throw error instanceof Error ? error : new Error(String(error));
+            }
+        });
+    }
+
+    private process(currentEvent?: EventRecord): void {
+        var deferredEvents: EventRecord[] = [];
+        var deferredOwners: string[] = [];
         var deferredCount = 0;
         var event = this.pop();
 
         while (event) {
             var currentStateName = this.currentState.qualifiedName;
             var eventName = event.name;
+            var transitioned = false;
+            var transitionSource: string | undefined = undefined;
             var deferredLookup = this.model.deferredMap[currentStateName];
-            var isDeferred = deferredLookup && deferredLookup[eventName] === true;
+            var deferOwner = deferredLookup && deferredLookup[eventName];
 
-            if (isDeferred) {
-                deferred[deferredCount++] = event;
+            if (currentEvent !== undefined && event !== currentEvent && deferOwner !== undefined) {
+                deferredOwners[deferredCount] = deferOwner;
+                deferredEvents[deferredCount] = event;
+                deferredCount++;
+                this.notify("processed", event.name);
                 event = this.pop();
                 continue;
             }
 
-                    var transitions = this.model.transitionMap[currentStateName][eventName];
-                    if (transitions && transitions.length > 0) {
-                        for (var i = 0; i < transitions.length; i++) {
-                            var transition = transitions[i];
-                            if (transition.guard) {
-                                var guard = getConstraint(this.model, transition.guard);
-                                if (guard) {
-                                    try {
-                                        var guardResult = guard.expression(
-                                            this.ctx,
-                                            this.instance,
+            try {
+                var transitionLookup = this.model.transitionMap[currentStateName] || {};
+                var transitions = transitionLookup[eventName];
+                if ((!transitions || transitions.length === 0) && eventName !== AnyEvent.name) {
+                    transitions = transitionLookup[AnyEvent.name];
+                }
+                if (transitions && transitions.length > 0) {
+                    for (var i = 0; i < transitions.length; i++) {
+                        var transition = transitions[i];
+                        if (transition.guard) {
+                            var guard = getConstraint(this.model, transition.guard);
+                            if (guard) {
+                                var guardResult = guard.expression(
+                                    this.ctx,
+                                    this.instance,
                                     event,
                                 );
+                                if (isThenable(guardResult)) {
+                                    throw new Error("guard must be a synchronous function");
+                                }
                                 if (!guardResult) {
                                     continue;
                                 }
-                            } catch (error) {
-                                this.dispatch(
-                                    Object.create(ErrorEvent, {
-                                        data: { value: error },
-                                    }),
-                                );
-                                continue;
                             }
                         }
-                    }
-                    var nextState = this.transition(this.currentState, transition, event);
-                    if (nextState.qualifiedName !== this.currentState.qualifiedName) {
-                        this.currentState = nextState;
-                        for (var j = 0; j < deferredCount; j++) {
-                            this.push(deferred[j]);
+                        var nextState = this.transition(this.currentState, transition, event);
+                        transitioned = true;
+                        transitionSource = transition.source;
+                        if (nextState.qualifiedName !== currentStateName) {
+                            this.currentState = nextState;
                         }
-                        deferredCount = 0;
+                        break;
                     }
-                    break;
                 }
+            } catch (error) {
+                if (error instanceof Error && error.message.includes("unhandled exit point")) {
+                    throw error;
+                }
+                this.reconcileActiveActivities(currentStateName, event);
+                this.push(
+                    Object.create(ErrorEvent, {
+                        data: { value: error },
+                    }),
+                );
+            }
+
+            if (!transitioned) {
+                if (deferOwner !== undefined) {
+                    deferredOwners[deferredCount] = deferOwner;
+                    deferredEvents[deferredCount] = event;
+                    deferredCount++;
+                    this.notify("processed", event.name);
+                    event = this.pop();
+                    continue;
+                }
+            }
+
+            if (transitioned && deferredCount > 0) {
+                var activeState = this.currentState.qualifiedName;
+                for (var deferredIndex = 0; deferredIndex < deferredCount; deferredIndex++) {
+                    var discard = false;
+                    var deferOwnerPath = deferredOwners[deferredIndex];
+                    var current = dirname(deferOwnerPath);
+                    while (current && current !== "." && current !== "/") {
+                        var currentState = this.model.members[current];
+                        if (currentState && isStateElement(currentState) && isKind(currentState.kind, kinds.SubmachineState)) {
+                            discard =
+                                activeState !== current &&
+                                !isAncestor(current, activeState) &&
+                                !(transitionSource && isAncestor(current, transitionSource));
+                            break;
+                        }
+                        if (current === this.model.qualifiedName) {
+                            break;
+                        }
+                        current = dirname(current);
+                    }
+                    if (!discard) {
+                        this.push(deferredEvents[deferredIndex]);
+                    }
+                }
+                deferredCount = 0;
             }
 
             this.notify("processed", event.name);
@@ -3460,7 +5098,7 @@ class HSM {
         }
 
         for (var i = 0; i < deferredCount; i++) {
-            this.push(deferred[i]);
+            this.push(deferredEvents[i]);
         }
 
         this.processing = false;
@@ -3504,6 +5142,19 @@ class HSM {
         if (!path) {
             path = EMPTY_PATH;
         }
+        var target = getVertex(this.model, transition.target);
+        var skipHistoryOwner =
+            target && isKind(target.kind, kinds.ShallowHistory, kinds.DeepHistory)
+                ? dirname(target.qualifiedName)
+                : undefined;
+        if (path.exit.length > 0) {
+            var historyTargets = this.model.historyTargets[path.exit[0] + "\n" + (skipHistoryOwner || "")];
+            if (historyTargets) {
+                for (var historyName in historyTargets) {
+                    this.history[historyName] = historyTargets[historyName];
+                }
+            }
+        }
         for (var i = 0; i < path.exit.length; i++) {
             var exitingName = path.exit[i];
             var exiting = this.model.members[exitingName];
@@ -3527,8 +5178,7 @@ class HSM {
             var entering = getVertex(this.model, enteringName);
             if (entering) {
                 var defaultEntry =
-                    entering.qualifiedName === transition.target &&
-                    transition.kind !== kinds.Self;
+                    entering.qualifiedName === transition.target;
                 enteredState = this.enter(entering, event, defaultEntry);
             }
         }
@@ -3544,7 +5194,6 @@ class HSM {
     ): Vertex {
         if (isStateElement(vertex)) {
             var state: State = vertex;
-            this.recordHistory(state.qualifiedName);
 
             for (var i = 0; i < state.entry.length; i++) {
                 var entryName = state.entry[i];
@@ -3561,6 +5210,15 @@ class HSM {
                 if (behavior) {
                     this.execute(behavior, event);
                 }
+            }
+
+            if (isKind(state.kind, kinds.FinalState)) {
+                this.push({
+                    name: FinalEvent.name,
+                    kind: FinalEvent.kind,
+                    source: state.qualifiedName,
+                });
+                return state;
             }
 
             if (defaultEntry && state.initial) {
@@ -3580,6 +5238,65 @@ class HSM {
         }
 
         if (
+            isKind(vertex.kind, kinds.EntryPoint)
+        ) {
+            var entryVertex = vertex;
+            if (!entryVertex.transitions.length) {
+                return entryVertex;
+            }
+            var entryTransition = getTransition(this.model, entryVertex.transitions[0]);
+            if (!entryTransition) {
+                return entryVertex;
+            }
+            return this.transition(entryVertex, entryTransition, event);
+        }
+
+        if (
+            isKind(vertex.kind, kinds.ExitPoint)
+        ) {
+            var exitVertex = vertex;
+            for (var exitIndex = 0; exitIndex < exitVertex.transitions.length; exitIndex++) {
+                var exitTransition = getTransition(this.model, exitVertex.transitions[exitIndex]);
+                if (!exitTransition || exitTransition.target !== dirname(exitVertex.qualifiedName)) {
+                    continue;
+                }
+                if (exitTransition.guard) {
+                    var returnGuard = getConstraint(this.model, exitTransition.guard);
+                    if (returnGuard) {
+                        var returnGuardResult = returnGuard.expression(this.ctx, this.instance, event);
+                        if (isThenable(returnGuardResult)) {
+                            throw new Error("guard must be a synchronous function");
+                        }
+                        if (!returnGuardResult) {
+                            continue;
+                        }
+                    }
+                }
+                this.transition(exitVertex, exitTransition, event);
+            }
+            for (var handlerIndex = 0; handlerIndex < exitVertex.transitions.length; handlerIndex++) {
+                var handlerTransition = getTransition(this.model, exitVertex.transitions[handlerIndex]);
+                if (!handlerTransition || handlerTransition.target === dirname(exitVertex.qualifiedName)) {
+                    continue;
+                }
+                if (handlerTransition.guard) {
+                    var handlerGuard = getConstraint(this.model, handlerTransition.guard);
+                    if (handlerGuard) {
+                        var handlerGuardResult = handlerGuard.expression(this.ctx, this.instance, event);
+                        if (isThenable(handlerGuardResult)) {
+                            throw new Error("guard must be a synchronous function");
+                        }
+                        if (!handlerGuardResult) {
+                            continue;
+                        }
+                    }
+                }
+                return this.transition(exitVertex, handlerTransition, event);
+            }
+            throw new Error('unhandled exit point "' + exitVertex.qualifiedName + '"');
+        }
+
+        if (
             isKind(vertex.kind, kinds.Choice) ||
             isKind(vertex.kind, kinds.Junction)
         ) {
@@ -3594,9 +5311,15 @@ class HSM {
 
                 if (choiceTransition.guard) {
                     var guard = getConstraint(this.model, choiceTransition.guard);
-                    if (guard && guard.expression(this.ctx, this.instance, event)) {
-                        chosenTransition = choiceTransition;
-                        break;
+                    if (guard) {
+                        var choiceGuardResult = guard.expression(this.ctx, this.instance, event);
+                        if (isThenable(choiceGuardResult)) {
+                            throw new Error("guard must be a synchronous function");
+                        }
+                        if (choiceGuardResult) {
+                            chosenTransition = choiceTransition;
+                            break;
+                        }
                     }
                 } else {
                     chosenTransition = choiceTransition;
@@ -3615,10 +5338,7 @@ class HSM {
             isKind(vertex.kind, kinds.DeepHistory)
         ) {
             var parent = dirname(vertex.qualifiedName);
-            var isShallowHistory = isKind(vertex.kind, kinds.ShallowHistory);
-            var resolved = isShallowHistory
-                ? this.historyShallow[parent]
-                : this.historyDeep[parent];
+            var resolved = this.history[vertex.qualifiedName];
             if (!resolved) {
                 var historyResult = this.followHistoryDefault(vertex, event);
                 if (historyResult) {
@@ -3644,13 +5364,9 @@ class HSM {
                 return vertex;
             }
 
-            var enterPath: string[] = [];
-            var currentPath = resolved;
-            while (currentPath && currentPath !== parent && currentPath !== ".") {
-                enterPath.unshift(currentPath);
-                currentPath = dirname(currentPath);
-            }
+            var enterPath = this.model.historyPaths[parent]?.[resolved] || [];
             var currentVertex = vertex;
+            var isShallowHistory = isKind(vertex.kind, kinds.ShallowHistory);
             for (var i = 0; i < enterPath.length; i++) {
                 var entering = getVertex(this.model, enterPath[i]);
                 if (!entering) {
@@ -3659,19 +5375,12 @@ class HSM {
                 currentVertex = this.enter(
                     entering,
                     event,
-                    isShallowHistory && i === enterPath.length - 1,
+                    isShallowHistory && entering.qualifiedName === resolved,
                 );
             }
             return currentVertex;
         }
 
-        if (isKind(vertex.kind, kinds.FinalState)) {
-            this.notify("entered", vertex.qualifiedName);
-            if (dirname(vertex.qualifiedName) === this.model.qualifiedName) {
-                this.stop();
-            }
-            return vertex;
-        }
         return vertex;
     }
 
@@ -3703,27 +5412,55 @@ class HSM {
                 instance: Instance,
                 evt: EventRecord,
             ) {
-                self.invoke(behavior.operationName, ctx, [evt]);
+                return self.invoke(behavior.operationName, ctx, [evt]);
             };
         }
         if (!operation) {
             return;
         }
         if (isKind(behavior.kind, kinds.Concurrent)) {
-            var controller = new Context();
+            var controller = new Context(this.ctx);
+            var runtime = this;
+            var activityInstance = new Proxy(this.instance, {
+                get(target, property) {
+                    if (property === "set" || property === "Set") {
+                        return function (name: string, value: unknown): Completion {
+                            return runtime.queueActivityWork(function () {
+                                return runtime.set(name, value);
+                            });
+                        };
+                    }
+                    var value = Reflect.get(target, property, target);
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+                set(target, property, value) {
+                    return Reflect.set(target, property, value, target);
+                },
+            });
+            bindRuntime(activityInstance, this.runtime);
             try {
+                var machineContext = this.ctx;
                 var asyncOperationPromise = Promise.resolve(
-                    operation(controller, this.instance, event),
+                    operation(controller, activityInstance, event),
                 );
                 this.active[behavior.qualifiedName] = {
                     context: controller,
                     promise: asyncOperationPromise.catch(function (error) {
+                        var active = self.active[behavior.qualifiedName];
+                        if (!active || active.context !== controller || controller.done) {
+                            return;
+                        }
                         self.dispatch(
+                            machineContext,
                             Object.create(ErrorEvent, {
                                 data: { value: error },
                             }),
                         );
                     }).then(function () {
+                        var active = self.active[behavior.qualifiedName];
+                        if (!active || active.context !== controller || controller.done) {
+                            return;
+                        }
                         self.notify("executed", behavior.qualifiedName);
                         self.notify(
                             "executed",
@@ -3732,19 +5469,21 @@ class HSM {
                     }),
                 };
             } catch (err) {
-                error = err;
+                if (!controller.done) {
+                    error = err;
+                }
             }
         } else {
-            try {
-                operation(this.ctx, this.instance, event);
-                this.notify("executed", behavior.qualifiedName);
-                this.notify("executed", dirname(behavior.qualifiedName));
-            } catch (err) {
-                error = err;
+            var result = operation(this.ctx, this.instance, event);
+            if (isThenable(result)) {
+                throw new Error("sequential behavior must be synchronous");
             }
+            this.notify("executed", behavior.qualifiedName);
+            this.notify("executed", dirname(behavior.qualifiedName));
         }
         if (error) {
             this.dispatch(
+                this.ctx,
                 Object.create(ErrorEvent, {
                     data: { value: error },
                 }),
@@ -3755,15 +5494,15 @@ class HSM {
     private terminate(activity: Behavior): void {
         var active = this.active[activity.qualifiedName];
         if (active) {
-            active.context.done = true;
-            for (var i = 0; i < active.context.listeners.length; i++) {
-                active.context.listeners[i]();
-            }
+            active.context.cancel();
             delete this.active[activity.qualifiedName];
         }
     }
 
-    stop(): void {
+    stop(): Completion {
+        if (this.currentState.qualifiedName === this.model.qualifiedName && !this.processing) {
+            return Promise.resolve();
+        }
         this.processing = true;
         while (
             this.currentState &&
@@ -3784,11 +5523,12 @@ class HSM {
             this.currentState = parentState;
         }
         this.processing = false;
-        this.ctx.done = true;
-        for (var i = 0; i < this.ctx.listeners.length; i++) {
-            this.ctx.listeners[i]();
-        }
+        this.queue.front.length = 0;
+        this.queue.back = [];
+        this.queue.backHead = 0;
+        this.ctx.cancel();
         delete this.ctx.instances[this.id];
+        return Promise.resolve();
     }
 }
 
@@ -3805,6 +5545,73 @@ function find(
         }
     }
     return undefined;
+}
+
+
+export function New<
+    M extends TypedModel<
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        Instance
+    >,
+    ModelInstance extends NonNullable<M['__hsm_instance']> & Instance =
+        NonNullable<M['__hsm_instance']> & Instance,
+>(
+    instance: ModelInstance,
+    model: M,
+    maybeConfig?: Config,
+): MachineInstanceFor<M, ModelInstance>;
+export function New(
+    instance: Instance,
+    model: Model,
+    maybeConfig?: Config,
+): MachineInstanceFor<
+    TypedModel<any, any, any, any, any, any, any, Instance>,
+    Instance
+> {
+    new HSM(instance, model, maybeConfig);
+    return instance as MachineInstanceFor<
+        TypedModel<any, any, any, any, any, any, any, Instance>,
+        Instance
+    >;
+}
+
+export function Start<TInstance extends Instance>(
+    ctx: Context | null | undefined,
+    instance: TInstance,
+    data?: unknown,
+): Promise<TInstance> {
+    return instance.start(ctx || instance.context(), data);
+}
+
+export function Started<
+    M extends TypedModel<
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        Instance
+    >,
+    ModelInstance extends NonNullable<M['__hsm_instance']> & Instance =
+        NonNullable<M['__hsm_instance']> & Instance,
+>(
+    ctx: Context | null | undefined,
+    instance: ModelInstance,
+    model: M,
+    maybeConfig?: Config,
+): Promise<MachineInstanceFor<M, ModelInstance>> {
+    var bound = New(instance, model, maybeConfig);
+    return Start(ctx, bound, configData(maybeConfig)).then(function () {
+        return bound;
+    });
 }
 
 
@@ -3869,22 +5676,12 @@ export function start(
         runtimeModel as Model,
         maybeConfig,
     );
-    sm.start();
+    void sm.start(context as Context, configData(maybeConfig));
     return runtimeInstance as MachineInstanceFor<
         TypedModel<any, any, any, any, any, any, any, Instance>,
         Instance
     >;
 }
-
-
-export function stop(instance: Instance): void {
-    var runtime = runtimeFor(instance);
-    if (runtime) {
-        runtime.stop();
-    }
-}
-
-
 
 export function state<
     Name extends string,
@@ -3911,7 +5708,7 @@ export function state<
                 deferred: [],
             };
 
-            model.members[stateObj.qualifiedName] = stateObj;
+            setModelMember(model, stateObj);
             stack.push(stateObj);
             apply(model, stack, partials);
             stack.pop();
@@ -3923,6 +5720,45 @@ export function state<
             name,
             parts: partials as unknown as Parts,
         } as StateSpec<Name, Parts>,
+    );
+}
+
+export function submachineState<
+    Name extends string,
+    const Parts extends readonly ModelElementSpec[] = readonly ModelElementSpec[],
+>(
+    name: Name,
+    machine: Model,
+    ...partials: BuilderTuple<ValidateStateLocalSpecs<Parts>>
+) {
+    validateNameNoSlash("SubmachineState", name);
+    return attachSpec(
+        function (model: Model, stack: AnyModelElement[]): State {
+            var namespace = (find(stack, kinds.State, kinds.Model));
+            var qualifiedName = join(namespace.qualifiedName, name);
+            var stateObj: State = {
+                qualifiedName,
+                kind: kinds.SubmachineState,
+                transitions: [],
+                entry: [],
+                exit: [],
+                activities: [],
+                deferred: [],
+                initial: "",
+            };
+            setModelMember(model, stateObj);
+            stack.push(stateObj);
+            submachineRoots.set(stateObj, machine.qualifiedName);
+            apply(model, stack, machine.partials);
+            apply(model, stack, partials);
+            stack.pop();
+            return stateObj;
+        },
+        {
+            kind: 'submachineState',
+            name,
+            parts: partials as unknown as Parts,
+        } as SubmachineStateSpec<Name, Parts>,
     );
 }
 
@@ -3967,7 +5803,7 @@ export function initial(
                 transitions: [],
             };
 
-            model.members[initialName] = initialObj;
+            setModelMember(model, initialObj);
             state.initial = initialName;
 
             // Add the initial event trigger
@@ -4008,7 +5844,7 @@ export function transition<
             throw new Error("transition must be declared inside a vertex");
         }
 
-        var name = 'transition_' + Object.keys(model.members).length;
+        var name = 'transition_' + modelElementIndex(model);
 
         var transitionObj: Transition = {
             qualifiedName: join(vertex.qualifiedName, name),
@@ -4024,7 +5860,7 @@ export function transition<
             target: undefined,
         };
 
-        model.members[transitionObj.qualifiedName] = transitionObj;
+        setModelMember(model, transitionObj);
         stack.push(transitionObj);
         apply(model, stack, partials);
         stack.pop();
@@ -4038,76 +5874,6 @@ export function transition<
             throw new Error("invalid transition source " + transitionObj.source);
         }
         sourceElement.transitions.push(transitionObj.qualifiedName);
-
-        // Determine transition kind and compute paths after all elements are processed
-        model.partials.push(function () {
-            if (transitionObj.target === transitionObj.source) {
-                transitionObj.kind = kinds.Self;
-            } else if (!transitionObj.target) {
-                transitionObj.kind = kinds.Internal;
-            } else if (isAncestor(transitionObj.source, transitionObj.target)) {
-                transitionObj.kind = kinds.Local;
-            } else {
-                transitionObj.kind = kinds.External;
-            }
-
-            // Compute paths
-            var lcaPath = lca(transitionObj.source, transitionObj.target);
-            var enter =
- ([]);
-            if (transitionObj.kind === kinds.Self) {
-                enter.push(sourceElement.qualifiedName);
-            } else {
-                var entering = transitionObj.target;
-                while (entering && entering !== lcaPath && entering !== '/') {
-                    enter.unshift(entering);
-                    entering = dirname(entering);
-                }
-            }
-
-            if (sourceElement.kind === kinds.Initial) {
-                transitionObj.paths[dirname(sourceElement.qualifiedName)] = {
-                    enter: enter,
-                    exit: [sourceElement.qualifiedName]
-                };
-                return transitionObj;
-            }
-
-            // Add another partial to compute all other exit paths after all elements are defined
-            model.partials.push(function () {
-                if (transitionObj.kind === kinds.Internal) {
-                    // Internal transitions do not involve exiting/entering other states
-                    return;
-                }
-                for (var qualifiedName in model.members) {
-                    var element = getVertex(model, qualifiedName);
-                    if (!element) {
-                        continue;
-                    }
-                    if (
-                        transitionObj.source !== qualifiedName &&
-                        !isAncestor(transitionObj.source, qualifiedName)
-                    ) {
-                        continue;
-                    }
-                    var exit =
- ([]);
-                    var exiting =
- (element.qualifiedName);
-                    while (exiting !== lcaPath && exiting) {
-                        exit.push(exiting);
-                        exiting = dirname(exiting);
-                        if (exiting === '/') {
-                            break;
-                        }
-                    }
-                    transitionObj.paths[element.qualifiedName] = {
-                        enter: enter,
-                        exit: exit
-                    };
-                }
-            });
-        });
         return transitionObj;
     },
     {
@@ -4134,8 +5900,8 @@ export function source<Name extends string>(
                 if (ancestor) {
                     resolvedName = join(ancestor.qualifiedName, resolvedName);
                 }
-            } else if (!isAncestor(model.qualifiedName, resolvedName)) {
-                resolvedName = join(model.qualifiedName, resolvedName.slice(1));
+            } else {
+                resolvedName = rebaseAbsolutePath(model, stack, resolvedName);
             }
 
             transition.source = resolvedName;
@@ -4161,13 +5927,12 @@ export function target<Name extends string>(
 
             var resolvedName: string = name;
             if (!isAbsolute(resolvedName)) {
-                // Look for the nearest namespace (state or model) in the stack for path resolution
-                var ancestor = findState(stack) || findModel(stack);
+                var ancestor = findState(stack);
                 if (ancestor) {
                     resolvedName = join(ancestor.qualifiedName, resolvedName);
                 }
-            } else if (!isAncestor(model.qualifiedName, resolvedName)) {
-                resolvedName = join(model.qualifiedName, resolvedName.slice(1));
+            } else {
+                resolvedName = rebaseAbsolutePath(model, stack, resolvedName);
             }
             transition.target = resolvedName;
             return transition;
@@ -4221,6 +5986,7 @@ export function on(
 export function onSet<Name extends string>(
     name: Name,
 ): BuilderWithSpec<(model: any, stack: any) => unknown, OnSetClause<Name>> {
+    validateNameNoSlash("OnSet", name);
     return attachSpec(
         function (model: Model, stack: AnyModelElement[]) {
             var transition = findTransition(stack);
@@ -4235,11 +6001,18 @@ export function onSet<Name extends string>(
                 source: qualifiedName
             });
             if (!model.attributes[qualifiedName]) {
+                var existing = model.members[qualifiedName];
+                if (existing && !isKind(existing.kind, kinds.Attribute)) {
+                    throw new Error("attribute '" + qualifiedName + "' conflicts with existing model member");
+                }
                 model.attributes[qualifiedName] = {
+                    kind: kinds.Attribute,
                     name: name,
                     qualifiedName: qualifiedName,
-                    hasDefault: false
+                    hasDefault: false,
+                    hasType: false,
                 };
+                model.members[qualifiedName] = model.attributes[qualifiedName];
             }
             return transition;
         },
@@ -4254,6 +6027,7 @@ export function onSet<Name extends string>(
 export function onCall<Name extends string>(
     name: Name,
 ): BuilderWithSpec<(model: any, stack: any) => unknown, OnCallClause<Name>> {
+    validateNameNoSlash("OnCall", name);
     return attachSpec(
         function (model: Model, stack: AnyModelElement[]) {
             var transition = findTransition(stack);
@@ -4266,11 +6040,6 @@ export function onCall<Name extends string>(
                 kind: kinds.CallEvent,
                 name: qualifiedName,
                 source: qualifiedName
-            });
-            model.partials.push(function () {
-                if (!model.operations[qualifiedName]) {
-                    throw new Error('missing operation "' + qualifiedName + '" for OnCall()');
-                }
             });
             return transition;
         },
@@ -4302,49 +6071,40 @@ export function when(
         if (!transition) {
             return undefined;
         }
-        var eventName = join(transition.qualifiedName, 'when_' + Object.keys(model.members).length);
-        var event = {
-            kind: kinds.TimeEvent,
-            name: eventName
-        };
-        transition.events.push(eventName);
-        registerEvent(model, event);
-        model.partials.push(function () {
-            var source = getState(model, transition.source);
-            if (!source) {
-                return;
+        var hasAttributeEvent = false;
+        for (var qualifiedName in model.members) {
+            var member = model.members[qualifiedName];
+            if (
+                isKind(member.kind, kinds.Attribute) &&
+                dirname(member.qualifiedName) === model.qualifiedName &&
+                transition.events.indexOf(member.qualifiedName) === -1
+            ) {
+                transition.events.push(member.qualifiedName);
+                registerEvent(model, {
+                    kind: kinds.ChangeEvent,
+                    name: member.qualifiedName,
+                    source: member.qualifiedName,
+                });
+                hasAttributeEvent = true;
             }
-            pushBehaviors(
-                join(source.qualifiedName, 'activity_when_' + source.activities.length),
-                kinds.Concurrent,
-                source.activities,
-                model,
-                [function (ctx, instance, evt) {
-                    var signal = expr(ctx, instance, evt);
-                    var signalLike = toSignalLike(signal);
-                    if (!signalLike) {
-                        return;
-                    }
-                    return new Promise<void>(function (resolve) {
-                        var once = function () {
-                            if (!ctx.done) {
-                                instance.dispatch(event);
-                            }
-                            resolve();
-                        };
-                        if (hasThen(signalLike)) {
-                            signalLike.then(once);
-                        } else if (hasAddEventListener(signalLike)) {
-                            signalLike.addEventListener("done", once);
-                        } else if (hasOn(signalLike)) {
-                            signalLike.on("ready", once);
-                            signalLike.on("done", once);
-                        }
-                        ctx.addEventListener('done', resolve);
-                    });
-                }]
-            );
-        });
+        }
+        if (!hasAttributeEvent) {
+            transition.events.push(AnyEvent.name);
+            registerEvent(model, AnyEvent);
+        }
+        var guardName = join(transition.qualifiedName, 'when');
+        model.members[guardName] = {
+            qualifiedName: guardName,
+            kind: kinds.Constraint,
+            expression: function (ctx, instance, evt) {
+                var result = expr(ctx, instance, evt);
+                if (isThenable(result)) {
+                    throw new Error("guard must be a synchronous function");
+                }
+                return Boolean(result);
+            },
+        };
+        transition.guard = guardName;
     };
 }
 
@@ -4359,11 +6119,23 @@ function pushBehaviors(
     for (var i = 0; i < operations.length; i++) {
         var operation = operations[i];
         var qualifiedName = namePrefix + '_' + namesList.length;
+        var behaviorOperation: Operation | null = null;
+        var operationName: string | undefined = undefined;
+        if (typeof operation === 'function') {
+            behaviorOperation = operation;
+        } else if (typeof operation === 'string') {
+            operationName = qualifyModelName(model, operation);
+        } else if (operation && typeof operation.dispatch === "function") {
+            const dispatchable = operation;
+            behaviorOperation = function (ctx, _instance, event) {
+                return dispatchable.dispatch(ctx, event);
+            };
+        }
         var behavior = {
             qualifiedName: qualifiedName,
             kind: kind,
-            operation: typeof operation === 'function' ? operation : null,
-            operationName: typeof operation === 'string' ? qualifyModelName(model, operation) : undefined
+            operation: behaviorOperation,
+            operationName: operationName
         };
         model.members[qualifiedName] = behavior;
         namesList.push(qualifiedName);
@@ -4459,6 +6231,94 @@ export function effect<const Operations extends readonly BehaviorArgument[]>(
     );
 }
 
+function makeObservationEvent(
+    source: string,
+    occurrence: string,
+    event: EventRecord,
+): EventRecord {
+    return {
+        kind: kinds.Event,
+        name: "hsm/observation",
+        source,
+        data: {
+            event,
+            occurrence,
+            time: Date.now(),
+        },
+    };
+}
+
+export function observe<const Targets extends readonly unknown[]>(
+    ...targetsOrOperation: Targets
+): BuilderWithSpec<(model: Model, stack: AnyModelElement[]) => unknown, ObserveSpec<Targets>> {
+    return attachSpec(
+        function (model: Model) {
+            var observer: Operation | undefined;
+            var targets: string[] = [];
+            for (var i = 0; i < targetsOrOperation.length; i++) {
+                var targetOrOperation = targetsOrOperation[i];
+                if (typeof targetOrOperation === "function") {
+                    observer = targetOrOperation as Operation;
+                } else if (typeof targetOrOperation === "string") {
+                    targets.push(targetOrOperation);
+                } else if (targetOrOperation && typeof targetOrOperation === "object") {
+                    var eventName = (targetOrOperation as EventRecord).name;
+                    var qualifiedName = (targetOrOperation as Element).qualifiedName;
+                    if (typeof eventName === "string") {
+                        targets.push(eventName);
+                    } else if (typeof qualifiedName === "string") {
+                        targets.push(qualifiedName);
+                    }
+                }
+            }
+            var operation = observer || function () {};
+            model.partials.push(function () {
+                var observeAll = targets.length === 0;
+                for (var qualifiedName in model.members) {
+                    var member = model.members[qualifiedName];
+                    if (isBehaviorElement(member) && (observeAll || targets.indexOf(qualifiedName) !== -1)) {
+                        var original = member.operation;
+                        const behaviorName = member.qualifiedName;
+                        const originalOperation = original;
+                        member.operation = function (ctx, instance, event) {
+                            operation(ctx, instance, makeObservationEvent(behaviorName, "behavior", event));
+                            return originalOperation ? originalOperation(ctx, instance, event) : undefined;
+                        };
+                    }
+                    if (!isTransitionElement(member)) {
+                        continue;
+                    }
+                    var matchesTransition = observeAll || targets.indexOf(qualifiedName) !== -1;
+                    var matchesEvent = false;
+                    for (var eventIndex = 0; eventIndex < member.events.length; eventIndex++) {
+                        if (targets.indexOf(member.events[eventIndex]) !== -1) {
+                            matchesEvent = true;
+                            break;
+                        }
+                    }
+                    if (!matchesTransition && !matchesEvent) {
+                        continue;
+                    }
+                    var behaviorName = join(member.qualifiedName, "observation");
+                    const transitionName = qualifiedName;
+                    model.members[behaviorName] = {
+                        qualifiedName: behaviorName,
+                        kind: kinds.Sequential,
+                        operation: function (ctx, instance, event) {
+                            operation(ctx, instance, makeObservationEvent(transitionName, "event", event));
+                        },
+                    };
+                    member.effect.unshift(behaviorName);
+                }
+            });
+        },
+        {
+            kind: 'observe',
+            targets: targetsOrOperation,
+        } as ObserveSpec<Targets>,
+    );
+}
+
 
 export function guard<Name extends string>(
     expression: Name,
@@ -4516,28 +6376,46 @@ export function attribute<Name extends string, Value = unknown>(
 ): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, Value>>;
 export function attribute<Name extends string, Value = unknown>(
     name: Name,
+    type: undefined,
+    defaultValue: Value,
+): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, Value>>;
+export function attribute<Name extends string, Value = unknown>(
+    name: Name,
     typeOrDefault?: Value | Function,
     maybeDefault?: Value,
 ): BuilderWithSpec<(model: Model) => unknown, AttributeSpec<Name, Value>> {
     validateNameNoSlash("Attribute", name);
-    var hasType = isRuntimeTypeToken(typeOrDefault);
-    var valueType = hasType ? typeOrDefault : undefined;
-    var hasDefault = hasType ? arguments.length > 2 : arguments.length > 1;
-    var defaultValue = hasType ? maybeDefault : typeOrDefault;
+    var hasExplicitAny = arguments.length > 2 && typeOrDefault === undefined;
+    var hasType = !hasExplicitAny && isRuntimeTypeToken(typeOrDefault);
+    var hasDefault = hasExplicitAny || (hasType ? arguments.length > 2 : arguments.length > 1);
+    var defaultValue = hasExplicitAny ? maybeDefault : hasType ? maybeDefault : typeOrDefault;
+    var valueType = hasType
+        ? typeOrDefault
+        : hasDefault && !hasExplicitAny
+            ? inferRuntimeTypeToken(defaultValue)
+            : undefined;
+    var hasRuntimeType = hasType || valueType !== undefined;
     if (hasType && hasDefault && !matchesRuntimeTypeToken(valueType, defaultValue)) {
         throw new TypeError("Attribute default value does not match declared type");
     }
     return attachSpec(
         function (model: Model): unknown {
             var qualifiedName = qualifyModelName(model, name);
-            model.attributes[qualifiedName] = {
+            var existing = model.members[qualifiedName];
+            if (existing && !isKind(existing.kind, kinds.Attribute)) {
+                throw new Error("attribute '" + qualifiedName + "' conflicts with existing model member");
+            }
+            var attributeDefinition: AttributeDefinition = {
+                kind: kinds.Attribute,
                 name: name,
                 qualifiedName: qualifiedName,
                 hasDefault: hasDefault,
                 defaultValue: defaultValue,
-                hasType: hasType,
+                hasType: hasRuntimeType,
                 valueType: valueType,
             };
+            model.attributes[qualifiedName] = attributeDefinition;
+            model.members[qualifiedName] = attributeDefinition;
             return undefined;
         },
         {
@@ -4549,6 +6427,9 @@ export function attribute<Name extends string, Value = unknown>(
 }
 
 
+export function operation<Name extends string>(
+    name: Name,
+): BuilderWithSpec<(model: Model) => unknown, OperationSpec<Name, (...args: any[]) => any>>;
 export function operation<
     Name extends string,
     Fn extends Function,
@@ -4558,16 +6439,33 @@ export function operation<
 ): BuilderWithSpec<
     (model: Model) => unknown,
     OperationSpec<Name, Extract<Fn, (...args: any[]) => any>>
+>;
+export function operation<
+    Name extends string,
+    Fn extends Function,
+>(
+    name: Name,
+    implementation?: Fn,
+): BuilderWithSpec<
+    (model: Model) => unknown,
+    OperationSpec<Name, Extract<Fn, (...args: any[]) => any>>
 > {
     validateNameNoSlash("Operation", name);
     return attachSpec(
         function (model: Model): unknown {
             var qualifiedName = qualifyModelName(model, name);
-            model.operations[qualifiedName] = {
+            var existing = model.members[qualifiedName];
+            if (existing && !isKind(existing.kind, kinds.Operation)) {
+                throw new Error("operation '" + qualifiedName + "' conflicts with existing model member");
+            }
+            var operationDefinition: OperationDefinition = {
+                kind: kinds.Operation,
                 name: name,
                 qualifiedName: qualifiedName,
-                implementation: implementation as Extract<Fn, (...args: any[]) => any>
+                implementation: implementation as Extract<Fn, (...args: any[]) => any> | undefined
             };
+            model.operations[qualifiedName] = operationDefinition;
+            model.members[qualifiedName] = operationDefinition;
             return undefined;
         },
         {
@@ -4575,6 +6473,34 @@ export function operation<
             name,
             impl: implementation as Extract<Fn, (...args: any[]) => any>,
         } as OperationSpec<Name, Extract<Fn, (...args: any[]) => any>>,
+    );
+}
+
+export function validator(
+    modelValidator: ModelValidator,
+): BuilderWithSpec<(model: Model) => unknown, ValidatorSpec> {
+    return attachSpec(
+        function (): unknown {
+            return undefined;
+        },
+        {
+            kind: 'validator',
+            validator: modelValidator,
+        } as ValidatorSpec,
+    );
+}
+
+export function finalizer(
+    modelFinalizer: ModelFinalizer,
+): BuilderWithSpec<(model: Model) => unknown, FinalizerSpec> {
+    return attachSpec(
+        function (): unknown {
+            return undefined;
+        },
+        {
+            kind: 'finalizer',
+            finalizer: modelFinalizer,
+        } as FinalizerSpec,
     );
 }
 
@@ -4592,7 +6518,7 @@ export function after(duration: string | TimeExpression) {
             return undefined;
         }
 
-        var eventName = join(transition.qualifiedName, 'after_' + Object.keys(model.members).length);
+        var eventName = join(transition.qualifiedName, 'duration');
 
         var event = {
             name: eventName,
@@ -4619,27 +6545,35 @@ export function after(duration: string | TimeExpression) {
                             return;
                         }
                         var delay = typeof duration === 'string'
-                            ? coerceDuration(instance.get(duration))
+                            ? coerceDuration(instance.get(duration)[0])
                             : duration(ctx, instance, evt);
                         return withThenable(delay, function (value) {
                             if (ctx.done) {
                                 return;
                             }
                             var coerceDelay = coerceDuration(value);
-                            if (coerceDelay <= 0) {
+                            if (coerceDelay < 0) {
                                 return;
                             }
                             return new Promise<void>(function (resolve) {
                                 var timeout = runtime.clock.setTimeout(function () {
+                                    ctx.removeEventListener('done', cancelTimer);
+                                    if (ctx.done) {
+                                        runtime.clock.clearTimeout(timeout);
+                                        resolve();
+                                        return;
+                                    }
                                     // Dispatch timer event asynchronously to avoid blocking the main thread
                                     instance.dispatch(event);
                                     resolve(); // Resolve the activity's promise after dispatch
                                 }, coerceDelay);
 
-                            ctx.addEventListener('done', function () {
-                                runtime.clock.clearTimeout(timeout);
-                                resolve(); // Resolve if aborted
-                            });
+                                var cancelTimer = function () {
+                                    ctx.removeEventListener('done', cancelTimer);
+                                    runtime.clock.clearTimeout(timeout);
+                                    resolve(); // Resolve if aborted
+                                };
+                                ctx.addEventListener('done', cancelTimer);
                             });
                         });
                     }]
@@ -4665,7 +6599,7 @@ export function every(duration: string | TimeExpression) {
             return undefined;
         }
 
-        var eventName = join(transition.qualifiedName, 'every_' + Object.keys(model.members).length);
+        var eventName = join(transition.qualifiedName, 'duration');
 
         var event = {
             name: eventName,
@@ -4691,31 +6625,65 @@ export function every(duration: string | TimeExpression) {
                         if (!runtime) {
                             return;
                         }
-                        var interval = typeof duration === 'string'
-                            ? coerceDuration(instance.get(duration))
-                            : duration(ctx, instance, evt);
-                        return withThenable(interval, function (value) {
+                        var readInterval = function (): unknown {
+                            return typeof duration === 'string'
+                                ? instance.get(duration)[0]
+                                : duration(ctx, instance, evt);
+                        };
+                        var schedule = function (
+                            value: unknown,
+                            resolve: () => void,
+                            reject: (error: unknown) => void,
+                        ): void {
                             if (ctx.done) {
+                                resolve();
                                 return;
                             }
-                            var coerceInterval = coerceDuration(value);
+                            var coerceInterval = Number(value);
+                            if (isNaN(coerceInterval)) {
+                                reject(new Error("invalid interval"));
+                                return;
+                            }
                             if (coerceInterval <= 0) {
+                                resolve();
                                 return;
                             }
-                            return new Promise<void>(function (resolve) {
-                                var timeout = runtime.clock.setTimeout(function tick() {
+                            var cancelTimer = function () {
+                                ctx.removeEventListener('done', cancelTimer);
+                                runtime.clock.clearTimeout(timeout);
+                                resolve(); // Resolve if aborted
+                            };
+                            var timeout = runtime.clock.setTimeout(function tick() {
+                                ctx.removeEventListener('done', cancelTimer);
+                                if (ctx.done) {
+                                    runtime.clock.clearTimeout(timeout);
+                                    resolve();
+                                    return;
+                                }
+                                Promise.resolve(instance.dispatch(event)).then(function () {
                                     if (ctx.done) {
-                                        runtime.clock.clearTimeout(timeout);
                                         resolve();
                                         return;
                                     }
-                                    instance.dispatch(event);
-                                    timeout = runtime.clock.setTimeout(tick, coerceInterval);
-                                }, coerceInterval);
-                                ctx.addEventListener('done', function () {
-                                    runtime.clock.clearTimeout(timeout);
-                                    resolve(); // Resolve if aborted
-                                });
+                                    var nextInterval = readInterval();
+                                    if (isThenable(nextInterval)) {
+                                        Promise.resolve(nextInterval).then(
+                                            function (resolvedInterval) {
+                                                schedule(resolvedInterval, resolve, reject);
+                                            },
+                                            reject,
+                                        );
+                                        return;
+                                    }
+                                    schedule(nextInterval, resolve, reject);
+                                }, reject);
+                            }, coerceInterval);
+                            ctx.addEventListener('done', cancelTimer);
+                        };
+                        var interval = readInterval();
+                        return withThenable(interval, function (value) {
+                            return new Promise<void>(function (resolve, reject) {
+                                schedule(value, resolve, reject);
                             });
                         });
                     }]
@@ -4753,7 +6721,7 @@ export function at(
         if (!transition) {
             return undefined;
         }
-        var eventName = join(transition.qualifiedName, 'at_' + Object.keys(model.members).length);
+        var eventName = join(transition.qualifiedName, 'timepoint');
         var event = {
             name: eventName,
             kind: kinds.TimeEvent
@@ -4778,7 +6746,7 @@ export function at(
                         return;
                     }
                     var timepointValue = typeof timepoint === 'string'
-                        ? coerceTimepoint(instance.get(timepoint))
+                        ? coerceTimepoint(instance.get(timepoint)[0])
                         : timepoint(ctx, instance, evt);
                     return withThenable(timepointValue, function (value) {
                         if (ctx.done) {
@@ -4786,19 +6754,26 @@ export function at(
                         }
                         var deadline = coerceTimepoint(value);
                         var delay = deadline - runtime.clock.now();
-                        if (delay <= 0) {
-                            instance.dispatch(event);
-                            return;
+                        if (delay < 0) {
+                            delay = 0;
                         }
                         return new Promise<void>(function (resolve) {
                             var timeout = runtime.clock.setTimeout(function () {
+                                ctx.removeEventListener('done', cancelTimer);
+                                if (ctx.done) {
+                                    runtime.clock.clearTimeout(timeout);
+                                    resolve();
+                                    return;
+                                }
                                 instance.dispatch(event);
                                 resolve();
                             }, delay);
-                            ctx.addEventListener('done', function () {
+                            var cancelTimer = function () {
+                                ctx.removeEventListener('done', cancelTimer);
                                 runtime.clock.clearTimeout(timeout);
                                 resolve();
-                            });
+                            };
+                            ctx.addEventListener('done', cancelTimer);
                         });
                     });
                 }]
@@ -4866,7 +6841,7 @@ export function final<Name extends string>(
                 initial: undefined,
             };
 
-            model.members[qualifiedName] = finalState;
+            setModelMember(model, finalState);
 
             return finalState;
         },
@@ -4874,6 +6849,180 @@ export function final<Name extends string>(
             kind: 'final',
             name,
         } as FinalSpec<Name>,
+    );
+}
+
+function findConnectionPoint(
+    model: Model,
+    boundary: string | undefined,
+    name: string,
+    pointKind: Kind,
+): Vertex | undefined {
+    if (!boundary) {
+        return undefined;
+    }
+    var direct: Vertex | undefined;
+    var nested: Vertex | undefined;
+    for (var qualifiedName in model.members) {
+        var member = model.members[qualifiedName];
+        if (!isVertex(member) || !isKind(member.kind, pointKind)) {
+            continue;
+        }
+        if (qualifiedName.split('/').pop() !== name) {
+            continue;
+        }
+        if (dirname(qualifiedName) === boundary) {
+            direct = member;
+            break;
+        }
+        if (isAncestor(boundary, qualifiedName) && !nested) {
+            nested = member;
+        }
+    }
+    return direct || nested;
+}
+
+export function entryPoint<
+    Name extends string,
+    const Parts extends readonly TransitionBuilderClause[] = readonly TransitionBuilderClause[],
+>(
+    name: Name,
+    ...partials: TransitionBuilderTuple<Parts>
+) {
+    validateNameNoSlash("EntryPoint", name);
+    return attachSpec(
+        function (model: Model, stack: AnyModelElement[]) {
+            var activeTransition = findTransition(stack);
+            if (activeTransition) {
+                model.partials.push(function () {
+                    if (!activeTransition.target) {
+                        throw new Error("entry point selector can only target a SubmachineState");
+                    }
+                    var boundary = getState(model, activeTransition.target);
+                    if (!boundary) {
+                        throw new Error('target "' + activeTransition.target + '" not found');
+                    }
+                    if (!isKind(boundary.kind, kinds.SubmachineState)) {
+                        throw new Error("entry point selector can only target a SubmachineState");
+                    }
+                    var entry = findConnectionPoint(
+                        model,
+                        activeTransition.target,
+                        name,
+                        kinds.EntryPoint,
+                    );
+                    if (!entry) {
+                        throw new Error("state '" + activeTransition.target + "' has no entry point '" + name + "'");
+                    }
+                    activeTransition.target = entry.qualifiedName;
+                });
+                return undefined;
+            }
+            var namespace = find(stack, kinds.State, kinds.Model);
+            if (!namespace) {
+                return undefined;
+            }
+            var qualifiedName = join(namespace.qualifiedName, name);
+            var entry: Vertex = {
+                qualifiedName,
+                kind: kinds.EntryPoint,
+                transitions: [],
+            };
+            setModelMember(model, entry);
+            stack.push(entry);
+            if (partials.length > 0) {
+                transition(...partials)(model, stack);
+            }
+            stack.pop();
+            return entry;
+        },
+        {
+            kind: 'entryPoint',
+            name,
+            parts: partials as unknown as Parts,
+        } as EntryPointSpec<Name, Parts>,
+    );
+}
+
+export function exitPoint<
+    Name extends string,
+    const Parts extends readonly TransitionBuilderClause[] = readonly TransitionBuilderClause[],
+>(
+    name: Name,
+    ...partials: TransitionBuilderTuple<Parts>
+) {
+    validateNameNoSlash("ExitPoint", name);
+    return attachSpec(
+        function (model: Model, stack: AnyModelElement[]) {
+            var activeTransition = findTransition(stack);
+            if (activeTransition) {
+                model.partials.push(function () {
+                    var boundary = getState(model, activeTransition.source);
+                    if (!boundary) {
+                        throw new Error('source "' + activeTransition.source + '" not found');
+                    }
+                    if (!isKind(boundary.kind, kinds.SubmachineState)) {
+                        throw new Error("ExitPoint outcome can only be handled by a SubmachineState");
+                    }
+                    var exit = findConnectionPoint(
+                        model,
+                        activeTransition.source,
+                        name,
+                        kinds.ExitPoint,
+                    );
+                    if (!exit) {
+                        throw new Error("state '" + activeTransition.source + "' has no exit point '" + name + "'");
+                    }
+                    var oldSource = getVertex(model, activeTransition.source);
+                    if (oldSource) {
+                        oldSource.transitions = oldSource.transitions.filter(function (transitionName) {
+                            return transitionName !== activeTransition.qualifiedName;
+                        });
+	                    }
+	                    activeTransition.source = exit.qualifiedName;
+	                    if (activeTransition.guard) {
+	                        var index = exit.transitions.length;
+	                        for (var currentIndex = 0; currentIndex < exit.transitions.length; currentIndex++) {
+	                            var existing = getTransition(model, exit.transitions[currentIndex]);
+	                            if (
+	                                existing &&
+	                                !existing.guard &&
+	                                existing.target !== dirname(exit.qualifiedName)
+	                            ) {
+	                                index = currentIndex;
+	                                break;
+	                            }
+	                        }
+	                        exit.transitions.splice(index, 0, activeTransition.qualifiedName);
+	                    } else {
+	                        exit.transitions.push(activeTransition.qualifiedName);
+	                    }
+	                });
+	                return undefined;
+	            }
+            var namespace = find(stack, kinds.State, kinds.Model);
+            if (!namespace) {
+                return undefined;
+            }
+            var qualifiedName = join(namespace.qualifiedName, name);
+            var exit: Vertex = {
+                qualifiedName,
+                kind: kinds.ExitPoint,
+                transitions: [],
+            };
+            setModelMember(model, exit);
+            stack.push(exit);
+            if (partials.length > 0) {
+                transition(target(dirname(qualifiedName)), ...partials)(model, stack);
+            }
+            stack.pop();
+            return exit;
+        },
+        {
+            kind: 'exitPoint',
+            name,
+            parts: partials as unknown as Parts,
+        } as ExitPointSpec<Name, Parts>,
     );
 }
 
@@ -4897,7 +7046,7 @@ export function shallowHistory(
             return undefined;
         }
         if (!name) {
-            name = 'shallow_history_' + Object.keys(model.members).length;
+            name = 'shallow_history_' + modelElementIndex(model);
         }
         var qualifiedName = join(owner.qualifiedName, name);
         var history = {
@@ -4905,7 +7054,7 @@ export function shallowHistory(
             kind: kinds.ShallowHistory,
             transitions: []
         };
-        model.members[qualifiedName] = history;
+        setModelMember(model, history);
         stack.push(history);
         apply(model, stack, partials);
         stack.pop();
@@ -4934,7 +7083,7 @@ export function deepHistory(
             return undefined;
         }
         if (!name) {
-            name = 'deep_history_' + Object.keys(model.members).length;
+            name = 'deep_history_' + modelElementIndex(model);
         }
         var qualifiedName = join(owner.qualifiedName, name);
         var history = {
@@ -4942,7 +7091,7 @@ export function deepHistory(
             kind: kinds.DeepHistory,
             transitions: []
         };
-        model.members[qualifiedName] = history;
+        setModelMember(model, history);
         stack.push(history);
         apply(model, stack, partials);
         stack.pop();
@@ -4951,9 +7100,22 @@ export function deepHistory(
 }
 
 
-export function choice(elementOrName: string | ((...args: unknown[]) => unknown)) {
-
-    var partials = slice(arguments, 1);
+export function choice<
+    Name extends string,
+    const Parts extends readonly ModelElementSpec[] = readonly ModelElementSpec[],
+>(
+    name: Name,
+    ...partials: ModelElementBuilderTuple<Parts>
+): BuilderWithSpec<(model: Model, stack: AnyModelElement[]) => Vertex | undefined, ChoiceSpec<Name, Parts>>;
+export function choice<
+    const Parts extends readonly ModelElementSpec[] = readonly ModelElementSpec[],
+>(
+    ...partials: ModelElementBuilderTuple<Parts>
+): BuilderWithSpec<(model: Model, stack: AnyModelElement[]) => Vertex | undefined, ChoiceSpec<string, Parts>>;
+export function choice(
+    elementOrName?: string | ((...args: unknown[]) => unknown),
+    ...partials: Array<(model: Model, stack: AnyModelElement[]) => unknown>
+) {
     var name = '';
 
     // If first argument is a string, it's the name of the choice pseudostate
@@ -4965,59 +7127,226 @@ export function choice(elementOrName: string | ((...args: unknown[]) => unknown)
         partials.unshift(elementOrName);
     }
 
-    return function (model: Model, stack: AnyModelElement[]) {
-        // Find the appropriate owner for this choice
-        var owner = find(stack, kinds.Transition, kinds.State);
-        if (!owner) {
-            return undefined;
-        }
-
-        if (isTransitionElement(owner)) {
-            var transition = owner;
-            var source = transition.source;
-            var ownerVertex = getVertex(model, source);
-            if (!ownerVertex) {
+    return attachSpec(
+        function (model: Model, stack: AnyModelElement[]) {
+            // Find the appropriate owner for this choice
+            var owner = find(stack, kinds.Transition, kinds.State);
+            if (!owner) {
                 return undefined;
             }
-            if (isKind(ownerVertex.kind, kinds.Pseudostate)) {
-                owner = find(stack, kinds.State);
-            } else if (isStateElement(ownerVertex)) {
-                owner = ownerVertex;
-            } else {
+
+            if (isTransitionElement(owner)) {
+                var transition = owner;
+                var source = transition.source;
+                var ownerVertex = getVertex(model, source);
+                if (!ownerVertex) {
+                    return undefined;
+                }
+                if (isKind(ownerVertex.kind, kinds.Pseudostate)) {
+                    owner = find(stack, kinds.State);
+                } else if (isStateElement(ownerVertex)) {
+                    owner = ownerVertex;
+                } else {
+                    return undefined;
+                }
+            }
+            if (!owner || !isStateElement(owner)) {
                 return undefined;
             }
-        }
-        if (!owner || !isStateElement(owner)) {
-            return undefined;
-        }
-        if (name === "") {
-            name = "choice_" + Object.keys(model.members).length;
-        }
+            if (name === "") {
+                name = "choice_" + modelElementIndex(model);
+            }
 
-        var qualifiedName = join(owner.qualifiedName, name);
+            var qualifiedName = join(owner.qualifiedName, name);
 
-        var choice = {
-            qualifiedName: qualifiedName,
-            kind: kinds.Choice,
-            transitions: [],
-        };
-        model.members[qualifiedName] = choice;
-        stack.push(choice);
-        apply(model, stack, partials);
-        stack.pop();
+            var choice = {
+                qualifiedName: qualifiedName,
+                kind: kinds.Choice,
+                transitions: [],
+            };
+            setModelMember(model, choice);
+            stack.push(choice);
+            apply(model, stack, partials);
+            stack.pop();
 
-        return choice;
-    };
+            return choice;
+        },
+        {
+            kind: 'choice',
+            name,
+            parts: partials,
+        } as ChoiceSpec<string, readonly unknown[]>,
+    );
 }
 
 
 export function dispatchAll(ctx: Context, event: EventRecord): Completion {
+    return dispatchTo(ctx, event);
+}
+
+function dispatchIDMatches(pattern: string, id: string): boolean {
+    if (pattern === id) {
+        return true;
+    }
+    if (pattern.indexOf("*") === -1 && pattern.indexOf("?") === -1) {
+        return false;
+    }
+    var escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    var expression = "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+    return new RegExp(expression).test(id);
+}
+
+function dispatchSourceFromContext(ctx: Context): string | undefined {
+    var current = fromContext(ctx)[0];
+    if (current instanceof Instance) {
+        var runtime = runtimeFor(current);
+        return runtime ? runtime.id : undefined;
+    }
+    if (current instanceof Group) {
+        return current.id || undefined;
+    }
+    return undefined;
+}
+
+function eventForRecipient(
+    event: EventRecord,
+    source: string | undefined,
+    target: string,
+): EventRecord {
+    var name = event.name === undefined ? event.Name : event.name;
+    var kind = event.kind === undefined ? event.Kind : event.kind;
+    var id = event.id === undefined ? event.ID : event.id;
+    var eventSource = event.source === undefined
+        ? event.Source === undefined ? source : event.Source
+        : event.source;
+    var eventTarget = event.target === undefined
+        ? event.Target === undefined ? target : event.Target
+        : event.target;
+    var qualifiedName = event.qualifiedName === undefined
+        ? event.QualifiedName
+        : event.qualifiedName;
+    var schema = event.schema === undefined ? event.Schema : event.schema;
+    return {
+        name: name as string,
+        Name: event.Name === undefined ? name : event.Name,
+        data: event.data,
+        kind: kind as Kind,
+        Kind: event.Kind === undefined ? (kind === undefined ? kinds.Event : kind) : event.Kind,
+        id,
+        ID: event.ID === undefined ? id : event.ID,
+        source: eventSource,
+        Source: event.Source === undefined ? eventSource : event.Source,
+        target: eventTarget,
+        Target: event.Target === undefined ? eventTarget : event.Target,
+        schema,
+        Schema: event.Schema === undefined ? schema : event.Schema,
+        qualifiedName,
+        QualifiedName: event.QualifiedName === undefined ? qualifiedName : event.QualifiedName,
+        metadata: (event as { metadata?: unknown }).metadata,
+    } as EventRecord;
+}
+
+function dispatchToCandidates(
+    ctx: Context,
+    event: EventRecord,
+    ids: string[],
+): Completion {
+    var registry = instancesFromContext(ctx)[0];
+    var source = dispatchSourceFromContext(ctx);
     var completions: Completion[] = [];
-    for (var id in ctx.instances) {
-        var instance = ctx.instances[id];
-        completions.push(instance.dispatch(event));
+    var seen: Record<string, boolean> = {};
+    for (var key in registry) {
+        var instance = registry[key];
+        if (!(instance instanceof Instance)) {
+            continue;
+        }
+        var runtime = runtimeFor(instance);
+        if (!runtime || runtime.state() === runtime.model.qualifiedName) {
+            continue;
+        }
+        var runtimeID = runtime.id;
+        if (seen[runtimeID]) {
+            continue;
+        }
+        var matched = ids.length === 0;
+        for (var i = 0; !matched && i < ids.length; i++) {
+            matched = dispatchIDMatches(ids[i], runtimeID);
+        }
+        if (!matched) {
+            continue;
+        }
+        seen[runtimeID] = true;
+        completions.push(instance.dispatch(ctx, eventForRecipient(event, source, runtimeID)));
     }
     return Promise.all(completions).then(function () {});
+}
+
+function makeModel(
+    name: string,
+    sourcePartials: Array<(model: Model, stack: AnyModelElement[]) => void>,
+    sourceRoots?: string[],
+): Model {
+    validateNameNoSlash("Model", name);
+    var modelValidator: ModelValidator = new DefaultModelValidator();
+    var modelFinalizer: ModelFinalizer = new DefaultModelFinalizer();
+    for (var partialIndex = 0; partialIndex < sourcePartials.length; partialIndex++) {
+        var spec = (sourcePartials[partialIndex] as { __hsmSpec?: ModelElementSpec }).__hsmSpec;
+        if (!spec) {
+            continue;
+        }
+        if (spec.kind === 'validator') {
+            modelValidator = spec.validator;
+        } else if (spec.kind === 'finalizer') {
+            modelFinalizer = spec.finalizer;
+        }
+    }
+
+    var model: Model = {
+        qualifiedName: join('/', name),
+        kind: kinds.Model,
+        members: {} as Record<Path, AnyModelElement>,
+        transitions: [] as string[],
+        entry: [] as string[],
+        exit: [] as string[],
+        activities: [] as string[],
+        deferred: [] as string[],
+        initial: "",
+        transitionMap: {} as Record<Path, Record<Path, any[]>>,
+        deferredMap: {} as Record<Path, Record<string, string>>,
+        historyPaths: {},
+        historyTargets: {},
+        events: {},
+        attributes: {},
+        operations: {},
+        partials: [] as Array<(model: Model, stack: AnyModelElement[]) => void>,
+    };
+    var rebaseRoots = uniqueModelRoots(sourceRoots && sourceRoots.length > 0
+        ? sourceRoots
+        : [model.qualifiedName]);
+    modelRebaseRoots.set(model, rebaseRoots);
+    model.members[model.qualifiedName] = model;
+    registerEvent(model, InitialEvent);
+    registerEvent(model, FinalEvent);
+    registerEvent(model, ErrorEvent);
+    registerEvent(model, AnyEvent);
+
+    var stack = [model];
+    apply(model, stack, sourcePartials);
+
+    while (model.partials.length > 0) {
+        var currentPartials = model.partials.slice();
+        model.partials = [];
+        for (var i = 0; i < currentPartials.length; i++) {
+            currentPartials[i](model, stack);
+        }
+    }
+
+    finalizeTransitionKinds(model);
+    modelValidator.validate(model);
+    model = modelFinalizer.finalize(model);
+    model.partials = sourcePartials.slice();
+    modelRebaseRoots.set(model, uniqueModelRoots([...rebaseRoots, model.qualifiedName]));
+    return model;
 }
 
 
@@ -5050,50 +7379,53 @@ export function define(
     name: string,
     ...partials: Array<(model: Model, stack: AnyModelElement[]) => void>
 ) {
-    validateNameNoSlash("Model", name);
+    return makeModel(name, partials);
+}
 
-    var model: Model = {
-        qualifiedName: join('/', name),
-        kind: kinds.Model,
-        members: {} as Record<Path, AnyModelElement>,
-        transitions: [] as string[],
-        entry: [] as string[],
-        exit: [] as string[],
-        activities: [] as string[],
-        deferred: [] as string[],
-        initial: "",
-        transitionMap: {} as Record<Path, Record<Path, any[]>>,
-        deferredMap: {} as Record<Path, Record<string, boolean>>,
-        events: {},
-        attributes: {},
-        operations: {},
-        partials: [] as Array<(model: Model, stack: AnyModelElement[]) => void>,
-    };
-    model.members[model.qualifiedName] = model;
-    registerEvent(model, InitialEvent);
-    registerEvent(model, FinalEvent);
-    registerEvent(model, ErrorEvent);
-    var stack = [model];
 
-    // Apply partials
-    apply(model, stack, partials);
-
-    // Process regular partials first
-    while (model.partials.length > 0) {
-        var currentPartials = model.partials.slice(); // Copy array
-        model.partials = [];
-        for (var i = 0; i < currentPartials.length; i++) {
-            currentPartials[i](model, stack);
-        }
+export function redefine<
+    Source extends TypedModel<any, any, any, any, any, any, any, any>,
+    const Parts extends readonly ModelElementSpec[] = readonly ModelElementSpec[],
+>(
+    model: Source,
+    ...partials: ModelElementBuilderTuple<Parts>
+): RedefinedModelFromInfer<Source, ModelRootNameOf<Source>, Parts>;
+export function redefine<
+    Source extends TypedModel<any, any, any, any, any, any, any, any>,
+    RootName extends string,
+    const Parts extends readonly ModelElementSpec[] = readonly ModelElementSpec[],
+>(
+    model: Source,
+    name: RootName,
+    ...partials: ModelElementBuilderTuple<Parts>
+): RedefinedModelFromInfer<Source, RootName, Parts>;
+export function redefine<M extends Model>(
+    model: M,
+    ...partials: Array<(model: Model, stack: AnyModelElement[]) => void>
+): M;
+export function redefine<M extends Model>(
+    model: M,
+    name: string,
+    ...partials: Array<(model: Model, stack: AnyModelElement[]) => void>
+): M;
+export function redefine(
+    model: Model,
+    nameOrPartial?: string | ((model: Model, stack: AnyModelElement[]) => void),
+    ...partials: Array<(model: Model, stack: AnyModelElement[]) => void>
+): Model {
+    var name = model.qualifiedName.replace(/^\//, "");
+    var additions = partials;
+    if (typeof nameOrPartial === "string") {
+        validateNameNoSlash("Model", nameOrPartial);
+        name = nameOrPartial;
+    } else if (typeof nameOrPartial === "function") {
+        additions = [nameOrPartial, ...partials];
     }
-
-    // Build the optimized transition table
-    buildTransitionTable(model);
-
-    // Build the deferred event lookup table
-    buildDeferredTable(model);
-
-    return model;
+    return makeModel(
+        name,
+        [...model.partials, ...additions],
+        uniqueModelRoots([...(modelRebaseRoots.get(model) || []), model.qualifiedName]),
+    );
 }
 
 
@@ -5102,101 +7434,211 @@ export function dispatchTo(
     event: EventRecord,
     ...ids: string[]
 ): Completion {
-    if (!ids.length) {
-        return dispatchAll(ctx, event);
-    }
-    var completions: Completion[] = [];
-    for (var i = 0; i < ids.length; i++) {
-        var instance = ctx.instances[ids[i]];
-        if (instance) {
-            completions.push(instance.dispatch(event));
+    return dispatchToCandidates(ctx, event, ids);
+}
+
+export function dispatch(
+    ctx: Context | null | undefined,
+    dispatchable: Dispatchable | null | undefined,
+    event: EventRecord,
+): Completion;
+export function dispatch(
+    dispatchable: Dispatchable | null | undefined,
+    event: EventRecord,
+): Completion;
+export function dispatch(
+    ctxOrDispatchable: Context | Dispatchable | null | undefined,
+    maybeDispatchableOrEvent: Dispatchable | EventRecord | null | undefined,
+    maybeEvent?: EventRecord,
+): Completion {
+    if (ctxOrDispatchable instanceof Context && arguments.length < 3) {
+        var currentEvent = maybeDispatchableOrEvent as EventRecord | undefined;
+        if (currentEvent) {
+            var current = fromContext(ctxOrDispatchable)[0];
+            if (current) {
+                return current.dispatch(ctxOrDispatchable, currentEvent);
+            }
         }
+        return errorCompletion(new Error("dispatch requires a started HSM"));
     }
-    return Promise.all(completions).then(function () {});
+    var hasExplicitContext = arguments.length >= 3;
+    var dispatchable = hasExplicitContext
+        ? maybeDispatchableOrEvent as Dispatchable | null | undefined
+        : ctxOrDispatchable as Dispatchable | null | undefined;
+    var event = hasExplicitContext
+        ? maybeEvent
+        : maybeDispatchableOrEvent as EventRecord | undefined;
+    if (dispatchable && event) {
+        var ctx = ctxOrDispatchable instanceof Context ? ctxOrDispatchable : dispatchable.context();
+        if (ctxOrDispatchable instanceof Context && dispatchable instanceof Instance) {
+            var runtime = runtimeFor(dispatchable);
+            if (runtime) {
+                return dispatchable.dispatch(
+                    ctx,
+                    eventForRecipient(event, dispatchSourceFromContext(ctx), runtime.id),
+                );
+            }
+        }
+        return dispatchable.dispatch(ctx, event);
+    }
+    return errorCompletion(new Error("dispatch requires a started HSM"));
 }
 
 export function get(
-    ctxOrInstance: Context | Instance,
-    maybeInstanceOrName: Instance | string,
+    ctxOrInstance: Context | Instance | null | undefined,
+    maybeInstanceOrName: Instance | string | null | undefined,
     maybeName?: string,
-) {
-    var instance = ctxOrInstance instanceof Context
+): AttributeRead {
+    var hasExplicitContext = ctxOrInstance instanceof Context ||
+        (ctxOrInstance == null && maybeInstanceOrName != null && typeof maybeInstanceOrName !== "string");
+    var instance = hasExplicitContext
         ? maybeInstanceOrName
         : ctxOrInstance;
-    var name = ctxOrInstance instanceof Context
+    var name = hasExplicitContext
         ? maybeName
         : (maybeInstanceOrName as string);
-    if (ctxOrInstance instanceof Context && typeof maybeName !== "string") {
-        return undefined;
+    if (ctxOrInstance instanceof Context && !hasExplicitContext) {
+        return [undefined, false];
     }
     if (!name) {
-        return undefined;
+        return [undefined, false];
     }
     if (!instance) {
-        return undefined;
+        if (ctxOrInstance instanceof Context) {
+            var current = fromContext(ctxOrInstance)[0];
+            if (current instanceof Instance) {
+                return current.get(name);
+            }
+        }
+        return [undefined, false];
     }
     var runtime = runtimeFor(instance);
-    return runtime ? runtime.get(name) : undefined;
+    return runtime ? runtime.get(name) : [undefined, false];
 }
 
 export function set(
-    ctxOrInstance: Context | Instance,
-    maybeInstanceOrName: Instance | string,
+    ctxOrInstance: Context | Instance | null | undefined,
+    maybeInstanceOrName: Instance | string | null | undefined,
     maybeNameOrValue: unknown,
     maybeValue?: unknown,
 ): Completion {
-    var instance = ctxOrInstance instanceof Context
+    var hasExplicitContext = ctxOrInstance instanceof Context ||
+        (ctxOrInstance == null && maybeInstanceOrName != null && typeof maybeInstanceOrName !== "string");
+    var instance = hasExplicitContext
         ? maybeInstanceOrName
         : ctxOrInstance;
-    var name = ctxOrInstance instanceof Context
+    var name = hasExplicitContext
         ? (maybeNameOrValue as string)
         : (maybeInstanceOrName as string);
-    var value = ctxOrInstance instanceof Context ? maybeValue : maybeNameOrValue;
+    var value = hasExplicitContext ? maybeValue : maybeNameOrValue;
     if (!instance) {
-        return Promise.resolve();
+        if (ctxOrInstance instanceof Context) {
+            var current = fromContext(ctxOrInstance)[0];
+            if (current instanceof Instance) {
+                return current.set(name, value);
+            }
+        }
+        return errorCompletion(new Error("set requires a started HSM"));
     }
     var runtime = runtimeFor(instance);
     if (runtime) {
         return runtime.set(name, value);
     }
-    return Promise.resolve();
+    return errorCompletion(new Error("set requires a started HSM"));
 }
 
 export function call(
-    ctxOrInstance: Context | Instance,
-    maybeInstanceOrName: Instance | string,
-    maybeName: string,
+    ctxOrInstance: Context | Instance | null | undefined,
+    maybeInstanceOrName: Instance | string | null | undefined,
+    maybeName?: string,
     ...args: unknown[]
-) {
-    var instance = ctxOrInstance instanceof Context
+): Promise<unknown> {
+    var hasExplicitContext = ctxOrInstance instanceof Context ||
+        (ctxOrInstance == null && maybeInstanceOrName != null && typeof maybeInstanceOrName !== "string");
+    var instance = hasExplicitContext
         ? maybeInstanceOrName
         : ctxOrInstance;
-    var name = ctxOrInstance instanceof Context
+    var name = hasExplicitContext
         ? maybeName
         : (maybeInstanceOrName as string);
     if (!instance) {
-        return undefined;
+        if (ctxOrInstance instanceof Context && name) {
+            var current = fromContext(ctxOrInstance)[0];
+            if (current instanceof Instance) {
+                return current.call(name, ...args);
+            }
+        }
+        return errorCompletion(new Error("operation requires a started HSM"));
     }
-    var callArgs = slice(arguments, ctxOrInstance instanceof Context ? 3 : 2);
+    var callArgs = slice(arguments, hasExplicitContext ? 3 : 2);
     var runtime = runtimeFor(instance);
     if (runtime) {
         return runtime.call(name, ...callArgs);
     }
+    return Promise.reject(new Error("operation requires a started HSM"));
 }
 
-export function restart(instance: Instance, data: unknown): void {
-    var runtime = runtimeFor(instance);
-    if (runtime) {
-        runtime.restart(data);
+export function stop(instance: Instance | Group): Completion {
+    return instance.stop();
+}
+
+export function restart(instance: Instance | Group, data?: unknown): Completion {
+    return instance.restart(data);
+}
+
+export function takeSnapshot(ctxOrInstance: Context | Group, group: Group): GroupSnapshotOf<readonly Instance[]>;
+export function takeSnapshot(ctxOrInstance: Group): GroupSnapshotOf<readonly Instance[]>;
+export function takeSnapshot(ctxOrInstance: Context | Instance, maybeInstance?: Instance): Snapshot;
+export function takeSnapshot(ctxOrInstance: Context | Instance | Group, maybeInstance?: Instance | Group): Snapshot | GroupSnapshotOf<readonly Instance[]> {
+    if (ctxOrInstance instanceof Group) {
+        return ctxOrInstance.takeSnapshot();
     }
-}
-
-export function takeSnapshot(ctxOrInstance: Context | Instance, maybeInstance?: Instance): Snapshot {
+    if (maybeInstance instanceof Group) {
+        return maybeInstance.takeSnapshot();
+    }
     var instance = ctxOrInstance instanceof Context ? maybeInstance : ctxOrInstance;
     var runtime = runtimeFor(instance);
-    return runtime
-        ? runtime.takeSnapshot()
-        : makeSnapshot('', '', '', freezeSnapshotObject({}), 0, freezeSnapshotEvents([]));
+    if (!runtime) {
+        throw new Error("take snapshot requires a started HSM");
+    }
+    return runtime.takeSnapshot();
+}
+
+function waitAfter(
+    ctx: Context,
+    instance: Instance,
+    bucket: AfterBucket,
+    key: string,
+): Promise<void> {
+    return new Promise<void>(function (resolve) {
+        var runtime = runtimeFor(instance);
+        if (!runtime) {
+            resolve();
+            return;
+        }
+        var removeAfter = function () {};
+        var settled = false;
+        var cleanup = function () {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            removeAfter();
+            ctx.removeEventListener("done", cleanup);
+        };
+        ctx.addEventListener("done", cleanup);
+        if (settled || ctx.done) {
+            return;
+        }
+        removeAfter = runtime.onAfter(bucket, key, function () {
+            if (ctx.done) {
+                cleanup();
+                return;
+            }
+            cleanup();
+            resolve();
+        });
+    });
 }
 
 export function afterProcess(
@@ -5211,32 +7653,19 @@ export function afterProcess(
             return;
         }
         if (maybeEvent) {
-            runtime.onAfter('processed', maybeEvent.name, function () {
-                resolve();
-            });
+            waitAfter(ctx, instance, 'processed', maybeEvent.name).then(resolve);
             return;
         }
         if (!runtime.processing) {
             resolve();
             return;
         }
-        runtime.onAfter('processed', '__next__', function () {
-            resolve();
-        });
+        waitAfter(ctx, instance, 'processed', '__next__').then(resolve);
     });
 }
 
 export function afterDispatch(ctx: Context, instance: Instance, event: EventRecord): Promise<void> {
-    return new Promise<void>(function (resolve) {
-        var runtime = runtimeFor(instance);
-        if (!runtime) {
-            resolve();
-            return;
-        }
-        runtime.onAfter('dispatched', event.name, function () {
-            resolve();
-        });
-    });
+    return waitAfter(ctx, instance, 'dispatched', event.name);
 }
 
 export function afterEntry(
@@ -5244,16 +7673,7 @@ export function afterEntry(
     instance: Instance,
     stateName: string,
 ): Promise<void> {
-    return new Promise<void>(function (resolve) {
-        var runtime = runtimeFor(instance);
-        if (!runtime) {
-            resolve();
-            return;
-        }
-        runtime.onAfter('entered', stateName, function () {
-            resolve();
-        });
-    });
+    return waitAfter(ctx, instance, 'entered', stateName);
 }
 
 export function afterExit(
@@ -5261,16 +7681,7 @@ export function afterExit(
     instance: Instance,
     stateName: string,
 ): Promise<void> {
-    return new Promise<void>(function (resolve) {
-        var runtime = runtimeFor(instance);
-        if (!runtime) {
-            resolve();
-            return;
-        }
-        runtime.onAfter('exited', stateName, function () {
-            resolve();
-        });
-    });
+    return waitAfter(ctx, instance, 'exited', stateName);
 }
 
 export function afterExecuted(
@@ -5278,16 +7689,7 @@ export function afterExecuted(
     instance: Instance,
     stateOrBehavior: string,
 ): Promise<void> {
-    return new Promise<void>(function (resolve) {
-        var runtime = runtimeFor(instance);
-        if (!runtime) {
-            resolve();
-            return;
-        }
-        runtime.onAfter('executed', stateOrBehavior, function () {
-            resolve();
-        });
-    });
+    return waitAfter(ctx, instance, 'executed', stateOrBehavior);
 }
 
 export function id(instance) {
@@ -5302,7 +7704,11 @@ export function qualifiedName(instance) {
 
 export function name(instance) {
     var runtime = runtimeFor(instance);
-    return runtime ? runtime.name : '';
+    if (!runtime) {
+        return '';
+    }
+    var parts = runtime.name.split('/');
+    return parts[parts.length - 1] || runtime.name;
 }
 
 export function clock(instance) {
@@ -5340,12 +7746,38 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
         }
     }
 
-    dispatch(event: GroupEventUnion<Members>): Completion {
-        var completions: Completion[] = [];
-        for (var i = 0; i < this.instances.length; i++) {
-            completions.push(this.instances[i].dispatch(event));
+    context(): Context {
+        var values = new Map<unknown, unknown>([[Keys.HSM, this]]);
+        if (this.instances.length) {
+            var instances = this.instances[0].context().Value(Keys.Instances);
+            if (instances && typeof instances === "object") {
+                values.set(Keys.Instances, instances);
+            }
         }
-        return Promise.all(completions).then(function () {});
+        return new Context(undefined, values);
+    }
+
+    dispatch(event: GroupEventUnion<Members>): Completion;
+    dispatch(ctx: Context, event: GroupEventUnion<Members>): Completion;
+    dispatch(ctxOrEvent: Context | GroupEventUnion<Members>, maybeEvent?: GroupEventUnion<Members>): Completion {
+        var self = this;
+        var ctx = ctxOrEvent instanceof Context ? ctxOrEvent : this.context();
+        var event = ctxOrEvent instanceof Context ? maybeEvent : ctxOrEvent;
+        if (!event) {
+            return errorCompletion(new Error("dispatch requires an event"));
+        }
+        return Promise.resolve().then(function () {
+            var completions: Completion[] = [];
+            var source = dispatchSourceFromContext(ctx);
+            for (var i = 0; i < self.instances.length; i++) {
+                var runtime = runtimeFor(self.instances[i]);
+                if (!runtime || runtime.state() === runtime.model.qualifiedName) {
+                    continue;
+                }
+                completions.push(self.instances[i].dispatch(ctx, eventForRecipient(event, source, runtime.id)));
+            }
+            return Promise.all(completions).then(function () {});
+        });
     }
 
     set<K extends SharedAttributeKeysOfGroupMembers<Members>>(
@@ -5354,6 +7786,10 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
     ): Completion {
         var completions: Completion[] = [];
         for (var i = 0; i < this.instances.length; i++) {
+            var runtime = runtimeFor(this.instances[i]);
+            if (!runtime || runtime.state() === runtime.model.qualifiedName) {
+                continue;
+            }
             completions.push(this.instances[i].set(name, value));
         }
         return Promise.all(completions).then(function () {});
@@ -5362,54 +7798,44 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
     call<K extends GroupOperationKeys<Members>>(
         name: K,
         ...args: Parameters<GroupOperationSignature<Members, K>>
-    ): ReturnType<GroupOperationSignature<Members, K>> {
+    ): Promise<Awaited<ReturnType<GroupOperationSignature<Members, K>>>> {
         if (!this.instances.length) {
-            return undefined as ReturnType<GroupOperationSignature<Members, K>>;
+            return Promise.resolve(undefined) as Promise<Awaited<ReturnType<GroupOperationSignature<Members, K>>>>;
         }
-        return this.instances[0].call(name, ...args) as ReturnType<GroupOperationSignature<Members, K>>;
+        return this.instances[0].call(name, ...args) as Promise<Awaited<ReturnType<GroupOperationSignature<Members, K>>>>;
     }
 
-    stop(): void {
+    state(): string[] {
+        var states: string[] = [];
         for (var i = 0; i < this.instances.length; i++) {
-            stop(this.instances[i]);
+            states.push(this.instances[i].state());
         }
+        return states;
     }
 
-    restart(data?: unknown): void {
+    stop(): Completion {
+        var completions: Completion[] = [];
         for (var i = 0; i < this.instances.length; i++) {
-            restart(this.instances[i], data);
+            completions.push(this.instances[i].stop());
         }
+        return Promise.all(completions).then(function () {});
+    }
+
+    restart(data?: unknown): Completion {
+        var completions: Completion[] = [];
+        for (var i = 0; i < this.instances.length; i++) {
+            completions.push(this.instances[i].restart(data === undefined ? undefined : cloneRuntimeValue(data)));
+        }
+        return Promise.all(completions).then(function () {});
     }
 
     takeSnapshot(): GroupSnapshotOf<Members> {
         var members: Snapshot[] = [];
-        var queueLen = 0;
-        var events: SnapshotEvent[] = [];
-        var ids: string[] = [];
-        var qualifiedNames: string[] = [];
-        var states: string[] = [];
         for (var i = 0; i < this.instances.length; i++) {
             var snapshot = this.instances[i].takeSnapshot();
             members.push(snapshot);
-            queueLen += snapshot.queueLen;
-            ids.push(snapshot.id);
-            qualifiedNames.push(snapshot.qualifiedName);
-            states.push(snapshot.state);
-            for (var j = 0; j < snapshot.events.length; j++) {
-                events.push(snapshot.events[j]);
-            }
         }
-        return makeSnapshot(
-            this.id || ids.join(','),
-            qualifiedNames.join(','),
-            states.join(' | '),
-            freezeSnapshotObject({}),
-            queueLen,
-            freezeSnapshotEvents(events),
-            {
-                members: freezeSnapshotObject(members) as GroupSnapshotsOfFlattenedMembers<FlattenGroupMembers<Members>>,
-            },
-        ) as GroupSnapshotOf<Members>;
+        return freezeSnapshotObject(members) as GroupSnapshotOf<Members>;
     }
 
     clock(): ClockConfig {
@@ -5439,7 +7865,9 @@ export const ConcurrentKind = kinds.Concurrent;
 export const SequentialKind = kinds.Sequential;
 export const StateMachineKind = kinds.StateMachine;
 export const AttributeKind = kinds.Attribute;
+export const OperationKind = kinds.Operation;
 export const StateKind = kinds.State;
+export const SubmachineStateKind = kinds.SubmachineState;
 export const ModelKind = kinds.Model;
 export const TransitionKind = kinds.Transition;
 export const InternalKind = kinds.Internal;
@@ -5454,17 +7882,24 @@ export const TimeEventKind = kinds.TimeEvent;
 export const CallEventKind = kinds.CallEvent;
 export const PseudostateKind = kinds.Pseudostate;
 export const InitialKind = kinds.Initial;
+export const EntryPointKind = kinds.EntryPoint;
+export const ExitPointKind = kinds.ExitPoint;
 export const FinalStateKind = kinds.FinalState;
 export const ChoiceKind = kinds.Choice;
 export const JunctionKind = kinds.Junction;
 export const DeepHistoryKind = kinds.DeepHistory;
 export const ShallowHistoryKind = kinds.ShallowHistory;
+export const ObservationKind = kinds.Observation;
 export const Define = define;
+export const Redefine = redefine;
 export const State = state;
+export const SubmachineState = submachineState;
 export const Final = final;
 export const ShallowHistory = shallowHistory;
 export const DeepHistory = deepHistory;
 export const Choice = choice;
+export const EntryPoint = entryPoint;
+export const ExitPoint = exitPoint;
 export const Transition = transition;
 export const Initial = initial;
 export const Event = event;
@@ -5481,18 +7916,25 @@ export const Entry = entry;
 export const Exit = exit;
 export const Activity = activity;
 export const Effect = effect;
+export const Observe = observe;
 export const Guard = guard;
 export const Defer = defer;
 export const Attribute = attribute;
 export const Operation = operation;
+export const Validator = validator;
+export const Finalizer = finalizer;
+export const Dispatch = dispatch;
 export const DispatchAll = dispatchAll;
 export const DispatchTo = dispatchTo;
 export const Get = get;
 export const Set = set;
 export const Call = call;
 export const Restart = restart;
+export const Stop = stop;
 export const TakeSnapshot = takeSnapshot;
 export const MakeGroup = makeGroup;
+export const FromContext = fromContext;
+export const InstancesFromContext = instancesFromContext;
 export const LCA = lca;
 export const IsAncestor = isAncestor;
 export const ID = id;

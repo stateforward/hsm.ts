@@ -34,6 +34,24 @@ const absolutePaths:
 const relativePaths: "idle" | "idle/nested" | "idle/sibling" | "running" =
   null as any as hsm.RelativeStatePathsOf<typeof model>;
 
+const choiceModel = hsm.define(
+  "ChoiceTyping",
+  hsm.state(
+    "deciding",
+    hsm.state("persistent"),
+    hsm.state("auto"),
+    hsm.choice(
+      "decide",
+      hsm.transition(hsm.guard(() => true), hsm.target("persistent")),
+      hsm.transition(hsm.target("auto")),
+    ),
+    hsm.initial(hsm.target("decide")),
+  ),
+);
+
+const choicePath: hsm.StatePathsOf<typeof choiceModel> =
+  "/ChoiceTyping/deciding/decide";
+
 // @ts-expect-error relative targets can only resolve within the current state's descendants
 hsm.define(
   "BrokenRelativeTarget",
@@ -72,3 +90,4 @@ hsm.define(
 
 void absolutePaths;
 void relativePaths;
+void choicePath;

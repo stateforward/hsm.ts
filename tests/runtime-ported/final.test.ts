@@ -148,6 +148,9 @@ test('Multiple final states in same container', async function () {
       hsm.target('process/running')
     ),
     hsm.state('process',
+      hsm.initial(
+        hsm.target('running')
+      ),
 
       hsm.state('running',
         hsm.entry(function (ctx, inst, event) {

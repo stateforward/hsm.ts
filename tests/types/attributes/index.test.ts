@@ -21,13 +21,13 @@ const model = hsm.define(
 const started = hsm.start(new CounterInstance(), model);
 const typedInstance: CounterInstance = started;
 
-const count: number = started.get("count");
-const label: string = started.get("label");
-const enabled: boolean = started.get("enabled");
-const typedCount: number = started.get("typedCount");
-const typedLabel: string = started.get("typedLabel");
-const typedDate: Date = started.get("typedDate");
-const missing: unknown = started.get("missing");
+const [count, countFound]: hsm.AttributeRead<number> = started.get("count");
+const [label]: hsm.AttributeRead<string> = started.get("label");
+const [enabled]: hsm.AttributeRead<boolean> = started.get("enabled");
+const [typedCount]: hsm.AttributeRead<number> = started.get("typedCount");
+const [typedLabel]: hsm.AttributeRead<string> = started.get("typedLabel");
+const [typedDate]: hsm.AttributeRead<Date> = started.get("typedDate");
+const [missing]: hsm.AttributeRead = started.get("missing");
 
 started.set("count", 1);
 started.set("label", "set");
@@ -59,6 +59,7 @@ const attributeKeys: hsm.AttributeKeysOf<typeof model> =
   null as any as "count" | "enabled" | "label" | "typedCount" | "typedLabel" | "typedDate";
 
 void count;
+void countFound;
 void label;
 void enabled;
 void typedCount;

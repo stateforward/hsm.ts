@@ -19,21 +19,21 @@ const liveTypedSnapshot: hsm.SnapshotOf<typeof model> = started.takeSnapshot();
 const typedSnapshot = {
   attributes: {},
   Attributes: {},
-  events: [{}],
-  Events: [{}],
+  transitions: [{}],
+  Transitions: [{}],
 } as any as hsm.SnapshotOf<typeof model>;
 const snapshotState: "/Snapshots/done" | "/Snapshots/idle" = typedSnapshot.state;
 const canonicalSnapshotState: "/Snapshots/done" | "/Snapshots/idle" = typedSnapshot.State;
 const snapshotAttributes: hsm.AttributesOf<typeof model> = typedSnapshot.attributes;
 const canonicalSnapshotAttributes: hsm.AttributesOf<typeof model> = typedSnapshot.Attributes;
-const snapshotEvent = typedSnapshot.events[0]!;
-const canonicalSnapshotEvent = typedSnapshot.Events[0]!;
-const eventName: "tick" = snapshotEvent.event;
-const canonicalEventName: "tick" = snapshotEvent.Name;
-const eventTarget: "/Snapshots/done" | undefined = snapshotEvent.target;
-const canonicalEventTarget: "/Snapshots/done" | undefined = snapshotEvent.Target;
-const canonicalEventGuard: boolean = snapshotEvent.Guard;
-const canonicalEventKind: number = snapshotEvent.Kind;
+const transitionSnapshot = typedSnapshot.transitions[0]!;
+const canonicalTransitionSnapshot = typedSnapshot.Transitions[0]!;
+const transitionSource: "/Snapshots" | "/Snapshots/idle" = transitionSnapshot.source;
+const canonicalTransitionSource: "/Snapshots" | "/Snapshots/idle" = transitionSnapshot.Source;
+const transitionTarget: "/Snapshots/done" | "/Snapshots/idle" | undefined = transitionSnapshot.target;
+const canonicalTransitionTarget: "/Snapshots/done" | "/Snapshots/idle" | undefined = transitionSnapshot.Target;
+const transitionGuard: boolean = transitionSnapshot.Guard;
+const transitionKind: number = transitionSnapshot.Kind;
 // @ts-expect-error snapshots expose readonly state
 typedSnapshot.state = "/Snapshots/idle";
 // @ts-expect-error canonical snapshots expose readonly state
@@ -42,32 +42,36 @@ typedSnapshot.State = "/Snapshots/idle";
 typedSnapshot.attributes.count = 1;
 // @ts-expect-error canonical snapshot attributes are readonly
 typedSnapshot.Attributes.count = 1;
-// @ts-expect-error snapshot events are readonly
-typedSnapshot.events.push(snapshotEvent);
-// @ts-expect-error canonical snapshot events are readonly
-typedSnapshot.Events.push(snapshotEvent);
-// @ts-expect-error snapshot event details are readonly
-snapshotEvent.guard = false;
-// @ts-expect-error canonical snapshot event details are readonly
-snapshotEvent.Guard = false;
-const tickSnapshot: Extract<hsm.EventSnapshotOf<typeof model>, { event: "tick" }> =
+// @ts-expect-error snapshot transitions are readonly
+typedSnapshot.transitions.push(transitionSnapshot);
+// @ts-expect-error canonical snapshot transitions are readonly
+typedSnapshot.Transitions.push(transitionSnapshot);
+// @ts-expect-error snapshot transition details are readonly
+transitionSnapshot.guard = false;
+// @ts-expect-error canonical snapshot transition details are readonly
+transitionSnapshot.Guard = false;
+const tickSnapshot: hsm.TransitionSnapshotOf<typeof model> =
   null as any as {
-    event: "tick";
-    Name: "tick";
+    name: string;
+    Name: string;
+    source: "/Snapshots/idle";
+    Source: "/Snapshots/idle";
     Kind: number;
+    kind: number;
+    events: readonly "tick"[];
+    Events: readonly "tick"[];
     guard: boolean;
     Guard: boolean;
-    schema?: any;
-    Schema?: any;
     target: "/Snapshots/done" | undefined;
     Target: "/Snapshots/done" | undefined;
   };
-// @ts-expect-error tick snapshots cannot target idle in this model
-const badTickSnapshot: Extract<hsm.EventSnapshotOf<typeof model>, { event: "tick" }> =
+// @ts-expect-error tick transitions cannot target idle in this model
+const badTickSnapshot: hsm.TransitionSnapshotOf<typeof model> =
   null as any as {
-    event: "tick";
+    name: string;
+    source: "/Snapshots/idle";
+    events: readonly "tick"[];
     guard: boolean;
-    schema?: any;
     target: "/Snapshots/idle";
   };
 
@@ -78,13 +82,13 @@ void snapshotState;
 void canonicalSnapshotState;
 void snapshotAttributes;
 void canonicalSnapshotAttributes;
-void canonicalSnapshotEvent;
-void eventName;
-void canonicalEventName;
-void eventTarget;
-void canonicalEventTarget;
-void canonicalEventGuard;
-void canonicalEventKind;
+void canonicalTransitionSnapshot;
+void transitionSource;
+void canonicalTransitionSource;
+void transitionTarget;
+void canonicalTransitionTarget;
+void transitionGuard;
+void transitionKind;
 void tickSnapshot;
 void badTickSnapshot;
 void started;

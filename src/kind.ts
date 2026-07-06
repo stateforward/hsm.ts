@@ -82,7 +82,9 @@ export const kinds = {
   Sequential: 0,
   StateMachine: 0,
   Attribute: 0,
+  Operation: 0,
   State: 0,
+  SubmachineState: 0,
   Model: 0,
   Transition: 0,
   Internal: 0,
@@ -97,11 +99,14 @@ export const kinds = {
   CallEvent: 0,
   Pseudostate: 0,
   Initial: 0,
+  EntryPoint: 0,
+  ExitPoint: 0,
   FinalState: 0,
   Choice: 0,
   Junction: 0,
   DeepHistory: 0,
   ShallowHistory: 0,
+  Observation: 0,
 } satisfies Record<string, Kind>;
 
 kinds.Partial = makeKind(kinds.Element);
@@ -113,7 +118,9 @@ kinds.Concurrent = makeKind(kinds.Behavior);
 kinds.Sequential = makeKind(kinds.Behavior);
 kinds.StateMachine = makeKind(kinds.Concurrent, kinds.Namespace);
 kinds.Attribute = makeKind(kinds.Element);
+kinds.Operation = makeKind(kinds.Behavior);
 kinds.State = makeKind(kinds.Vertex, kinds.Namespace);
+kinds.SubmachineState = makeKind(kinds.State);
 kinds.Model = makeKind(kinds.State);
 kinds.Transition = makeKind(kinds.Element);
 kinds.Internal = makeKind(kinds.Transition);
@@ -128,11 +135,14 @@ kinds.TimeEvent = makeKind(kinds.Event);
 kinds.CallEvent = makeKind(kinds.Event);
 kinds.Pseudostate = makeKind(kinds.Vertex);
 kinds.Initial = makeKind(kinds.Pseudostate);
+kinds.EntryPoint = makeKind(kinds.Pseudostate);
+kinds.ExitPoint = makeKind(kinds.Pseudostate);
 kinds.FinalState = makeKind(kinds.State);
 kinds.Choice = makeKind(kinds.Pseudostate);
 kinds.Junction = makeKind(kinds.Pseudostate);
 kinds.DeepHistory = makeKind(kinds.Pseudostate);
 kinds.ShallowHistory = makeKind(kinds.Pseudostate);
+kinds.Observation = makeKind(kinds.Element);
 
 export const Kinds = kinds;
 export const MakeKind = makeKind;

@@ -177,6 +177,9 @@ test('Action execution order in hierarchical states', async function () {
       hsm.target('parent/child1')
     ),
     hsm.state('parent',
+      hsm.initial(
+        hsm.target('child1')
+      ),
       hsm.entry(function (ctx, inst, event) {
         inst.logAction('parent-entry');
       }),
@@ -288,7 +291,7 @@ test('Actions with event data access', async function () {
   hsm.start(ctx, instance, model);
 
   // Initial entry should receive InitialEvent
-  assert.strictEqual(instance.data.entryEvent.name, 'hsm_initial');
+  assert.strictEqual(instance.data.entryEvent.name, 'hsm/initial');
 
   // Custom event with data
   instance.dispatch({
@@ -302,7 +305,7 @@ test('Actions with event data access', async function () {
   assert.strictEqual(instance.data.doneEvent.name, 'custom');
   assert.strictEqual(instance.data.payload, 'test-data');
   assert.deepStrictEqual(instance.log, [
-    'entry-with-hsm_initial',
+    'entry-with-hsm/initial',
     'exit-with-custom',
     'effect-with-custom',
     'done-entry-with-custom'
