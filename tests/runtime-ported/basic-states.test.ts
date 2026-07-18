@@ -78,6 +78,9 @@ test('State machine lifecycle - start and stop', async function () {
     )
   );
 
+  hsm.New(instance, model);
+  assert.strictEqual(instance.state(), '');
+
   // Start the state machine
   hsm.start(ctx, instance, model);
 
@@ -91,8 +94,7 @@ test('State machine lifecycle - start and stop', async function () {
   // Should have executed exit action
   assert.deepStrictEqual(instance.log, ['active-entry', 'active-exit']);
 
-  // State should be reset to model (root)
-  assert.strictEqual(instance.state(), '/LifecycleMachine');
+  assert.strictEqual(instance.state(), '');
 });
 
 test('Multiple transitions from the same state', async function () {
@@ -268,7 +270,7 @@ test('Event dispatching during state machine lifecycle', async function () {
     instance.dispatch({ name: 'next', kind: hsm.kinds.Event }),
     /dispatch requires a started HSM/
   );
-  assert.strictEqual(instance.state(), '/EventLifecycleMachine'); // Root state after stop
+  assert.strictEqual(instance.state(), '');
 });
 
 test('Unknown events should be ignored', async function () {

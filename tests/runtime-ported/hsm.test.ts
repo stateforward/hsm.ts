@@ -1313,7 +1313,7 @@ test("should gracefully stop state machine and exit states", async function () {
   hsm.stop(instance);
 
   // Verify stop behavior
-  assert.strictEqual(instance.state(), '/StopTest'); // Should be at root
+  assert.strictEqual(instance.state(), '');
   assert.strictEqual(instance.activityStopped, true);
 
   // Verify exit order (inner first, then outer)
@@ -1324,7 +1324,7 @@ test("should gracefully stop state machine and exit states", async function () {
     instance.dispatch({ name: 'shouldBeIgnored', kind: hsm.kinds.Event }),
     /dispatch requires a started HSM/
   );
-  assert.strictEqual(instance.state(), '/StopTest');
+  assert.strictEqual(instance.state(), '');
 });
 
 

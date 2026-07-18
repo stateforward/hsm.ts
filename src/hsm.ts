@@ -4466,7 +4466,11 @@ class HSM {
         }
 
         var existing = runtimeFor(instanceOrModel);
-        if (existing && existing.state() !== existing.model.qualifiedName) {
+        if (
+            existing &&
+            existing.state() !== "" &&
+            existing.state() !== existing.model.qualifiedName
+        ) {
             throw new Error("instance already has a running HSM");
         }
 
@@ -4589,7 +4593,14 @@ class HSM {
     }
 
     state(): string {
-        return this.currentState ? this.currentState.qualifiedName : "";
+        if (
+            this.currentState.qualifiedName === this.model.qualifiedName &&
+            !this.processing &&
+            (contextHSM.get(this.ctx) !== this.instance || this.ctx.done)
+        ) {
+            return "";
+        }
+        return this.currentState.qualifiedName;
     }
 
     private resetAttributes(): void {
@@ -7261,7 +7272,11 @@ function dispatchToCandidates(
             continue;
         }
         var runtime = runtimeFor(instance);
-        if (!runtime || runtime.state() === runtime.model.qualifiedName) {
+        if (
+            !runtime ||
+            runtime.state() === "" ||
+            runtime.state() === runtime.model.qualifiedName
+        ) {
             continue;
         }
         var runtimeID = runtime.id;
@@ -7771,7 +7786,11 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
             var source = dispatchSourceFromContext(ctx);
             for (var i = 0; i < self.instances.length; i++) {
                 var runtime = runtimeFor(self.instances[i]);
-                if (!runtime || runtime.state() === runtime.model.qualifiedName) {
+                if (
+                    !runtime ||
+                    runtime.state() === "" ||
+                    runtime.state() === runtime.model.qualifiedName
+                ) {
                     continue;
                 }
                 completions.push(self.instances[i].dispatch(ctx, eventForRecipient(event, source, runtime.id)));
@@ -7787,7 +7806,11 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
         var completions: Completion[] = [];
         for (var i = 0; i < this.instances.length; i++) {
             var runtime = runtimeFor(this.instances[i]);
-            if (!runtime || runtime.state() === runtime.model.qualifiedName) {
+            if (
+                !runtime ||
+                runtime.state() === "" ||
+                runtime.state() === runtime.model.qualifiedName
+            ) {
                 continue;
             }
             completions.push(this.instances[i].set(name, value));
