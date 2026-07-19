@@ -1892,7 +1892,7 @@ function recordError(runner: Runner, error: unknown): void {
         message.includes("stop") ||
         message.includes("restart") ||
         message.includes("dispatch requires")
-        ? "lifecycle_error"
+        ? "runtime_error"
         : message.includes("unhandled exit point")
         ? "unhandled_exit_point"
         : message.includes("invalid interval") || message.includes("timer")
@@ -2295,7 +2295,6 @@ function recordStable(runner: Runner): void {
     }
     if (
         typeof expectedStable?.state === "string" &&
-        expectedStable.state.startsWith("/") &&
         runner.lastStableLabel &&
         runner.instances.get(runner.lastStableLabel)?.state() === expectedStable.state
     ) {
