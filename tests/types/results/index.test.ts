@@ -20,12 +20,12 @@ const first = hsm.start(ctx, new ResultInstance(), model);
 const second = hsm.start(ctx, new ResultInstance(), model);
 const group = hsm.makeGroup(first, second);
 
-const instanceDispatchCompletion: hsm.Completion = first.dispatch(Done);
+const instanceDispatchCompletion: hsm.DispatchCompletion = first.dispatch(Done);
 const instanceSetCompletion: hsm.Completion = first.set("count", 1);
-const groupDispatchCompletion: hsm.Completion = group.dispatch(Done);
+const groupDispatchCompletion: hsm.DispatchCompletion = group.dispatch(Done);
 const groupSetCompletion: hsm.Completion = group.set("count", 2);
-const dispatchAllCompletion: hsm.Completion = hsm.dispatchAll(ctx, Done);
-const dispatchToCompletion: hsm.Completion = hsm.dispatchTo(ctx, Done, "0");
+const dispatchAllCompletion: hsm.DispatchCompletion = hsm.dispatchAll(ctx, Done);
+const dispatchToCompletion: hsm.DispatchCompletion = hsm.dispatchTo(ctx, Done, "0");
 const topLevelSetCompletion: hsm.Completion = hsm.set(first, "count", 3);
 
 // @ts-expect-error set returns a completion, not a number result

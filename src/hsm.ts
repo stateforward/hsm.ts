@@ -216,8 +216,8 @@ export interface Config {
 
 export interface Dispatchable {
     context(): Context;
-    dispatch(event: EventRecord): Completion;
-    dispatch(ctx: Context, event: EventRecord): Completion;
+    dispatch(event: EventRecord): DispatchCompletion;
+    dispatch(ctx: Context, event: EventRecord): DispatchCompletion;
 }
 
 export interface ModelValidator {
@@ -268,6 +268,7 @@ type CanonicalQueueShape = {
 type QueueShape = LowercaseQueueShape | CanonicalQueueShape;
 
 export type Completion = Promise<void>;
+export type DispatchCompletion = Promise<boolean>;
 
 type StripLeadingSlash<S extends string> = S extends `/${infer Rest}` ? Rest : S;
 type StripTrailingSlash<S extends string> = S extends `${infer Rest}/` ? Rest : S;
@@ -1951,10 +1952,10 @@ export type MachineInstanceFor<
 > = M extends TypedModel<infer A, infer O, any, any, any, any, any, any>
     ? Omit<I, "dispatch" | "state" | "takeSnapshot" | "get" | "set" | "call"> & {
         __hsm_model: M;
-        dispatch(event: DispatchEventsOf<M>): Completion;
-        dispatch(ctx: Context, event: DispatchEventsOf<M>): Completion;
-        Dispatch(event: DispatchEventsOf<M>): Completion;
-        Dispatch(ctx: Context, event: DispatchEventsOf<M>): Completion;
+        dispatch(event: DispatchEventsOf<M>): DispatchCompletion;
+        dispatch(ctx: Context, event: DispatchEventsOf<M>): DispatchCompletion;
+        Dispatch(event: DispatchEventsOf<M>): DispatchCompletion;
+        Dispatch(ctx: Context, event: DispatchEventsOf<M>): DispatchCompletion;
         state(): StatePathsOf<M>;
         State(): StatePathsOf<M>;
         takeSnapshot(): SnapshotOf<M>;
@@ -2107,7 +2108,7 @@ type BuilderWithSpec<Signature, Spec> = Signature & { readonly __hsmSpec: Spec }
 type BehaviorArgument<EventType extends EventRecord = EventRecord> =
     | ((ctx: Context, instance: Instance, evt: EventType) => unknown)
     | string
-    | { dispatch(ctx: Context, event: EventType): Completion };
+    | { dispatch(ctx: Context, event: EventType): DispatchCompletion };
 
 function attachSpec<Signature, Spec>(
     builder: Signature,
@@ -2119,7 +2120,7 @@ function attachSpec<Signature, Spec>(
 }
 
 type InternalRuntime = {
-  dispatch: (ctx: Context, event: EventRecord) => Completion;
+  dispatch: (ctx: Context, event: EventRecord) => DispatchCompletion;
   start: (ctx?: Context, data?: unknown) => Promise<Instance>;
   state: () => string;
   context: () => Context;
@@ -2675,6 +2676,13 @@ function isAsyncFunction(value: unknown): boolean {
 
 function errorCompletion(error: Error): Completion {
     var completion = Promise.reject(error) as Completion & { __hsmError?: Error };
+    completion.__hsmError = error;
+    completion.catch(function () {});
+    return completion;
+}
+
+function dispatchErrorCompletion(error: Error): DispatchCompletion {
+    var completion = Promise.reject(error) as DispatchCompletion & { __hsmError?: Error };
     completion.__hsmError = error;
     completion.catch(function () {});
     return completion;
@@ -4301,17 +4309,17 @@ var EMPTY_PATH = {
 export class Instance {
     _hsm: HSM | null = null;
 
-    dispatch(event: EventRecord): Completion;
-    dispatch(ctx: Context, event: EventRecord): Completion;
-    dispatch(ctxOrEvent: Context | EventRecord, maybeEvent?: EventRecord): Completion {
+    dispatch(event: EventRecord): DispatchCompletion;
+    dispatch(ctx: Context, event: EventRecord): DispatchCompletion;
+    dispatch(ctxOrEvent: Context | EventRecord, maybeEvent?: EventRecord): DispatchCompletion {
         var runtime = runtimeFor(this);
         if (!runtime) {
-            return errorCompletion(new Error("dispatch requires a started HSM"));
+            return dispatchErrorCompletion(new Error("dispatch requires a started HSM"));
         }
         var ctx = ctxOrEvent instanceof Context ? ctxOrEvent : this.context();
         var event = ctxOrEvent instanceof Context ? maybeEvent : ctxOrEvent;
         if (!event) {
-            return errorCompletion(new Error("dispatch requires an event"));
+            return dispatchErrorCompletion(new Error("dispatch requires an event"));
         }
         return runtime.dispatch(
             ctx,
@@ -4319,9 +4327,9 @@ export class Instance {
         );
     }
 
-    Dispatch(event: EventRecord): Completion;
-    Dispatch(ctx: Context, event: EventRecord): Completion;
-    Dispatch(ctxOrEvent: Context | EventRecord, maybeEvent?: EventRecord): Completion {
+    Dispatch(event: EventRecord): DispatchCompletion;
+    Dispatch(ctx: Context, event: EventRecord): DispatchCompletion;
+    Dispatch(ctxOrEvent: Context | EventRecord, maybeEvent?: EventRecord): DispatchCompletion {
         return maybeEvent === undefined
             ? this.dispatch(ctxOrEvent as EventRecord)
             : this.dispatch(ctxOrEvent as Context, maybeEvent);
@@ -4803,7 +4811,7 @@ class HSM {
                 new: cloneRuntimeValue(stored),
             },
         };
-        return this.dispatch(this.ctx, event);
+        return this.dispatch(this.ctx, event).then(function () {});
     }
 
     private call(name: string, ...args: unknown[]): Promise<unknown> {
@@ -4941,12 +4949,12 @@ class HSM {
 	        return undefined;
 	    }
 
-    dispatch(_ctx: Context, event: EventRecord): Completion {
+    dispatch(_ctx: Context, event: EventRecord): DispatchCompletion {
         if (
             this.currentState.qualifiedName === this.model.qualifiedName &&
             !this.processing
         ) {
-            return errorCompletion(new Error("dispatch requires a started HSM"));
+            return dispatchErrorCompletion(new Error("dispatch requires a started HSM"));
         }
         var dispatchEvent = cloneEventForDispatch(event);
         var pushError = this.queue.push(dispatchEvent);
@@ -4958,16 +4966,20 @@ class HSM {
         this.notify("dispatched", dispatchEvent.name);
 
         if (this.processing) {
-            return Promise.resolve();
+            return Promise.resolve(!pushError);
         }
         this.processing = true;
         try {
             this.process(dispatchEvent);
         } catch (error) {
             this.processing = false;
-            return errorCompletion(error instanceof Error ? error : new Error(String(error)));
+            return dispatchErrorCompletion(error instanceof Error ? error : new Error(String(error)));
         }
-        return Promise.resolve();
+        return Promise.resolve(!pushError);
+    }
+
+    Dispatch(event: EventRecord): DispatchCompletion {
+        return this.dispatch(this.ctx, event);
     }
 
     private queueActivityWork(work: () => Completion): Completion {
@@ -7191,7 +7203,7 @@ export function choice(
 }
 
 
-export function dispatchAll(ctx: Context, event: EventRecord): Completion {
+export function dispatchAll(ctx: Context, event: EventRecord): DispatchCompletion {
     return dispatchTo(ctx, event);
 }
 
@@ -7261,10 +7273,10 @@ function dispatchToCandidates(
     ctx: Context,
     event: EventRecord,
     ids: string[],
-): Completion {
+): DispatchCompletion {
     var registry = instancesFromContext(ctx)[0];
     var source = dispatchSourceFromContext(ctx);
-    var completions: Completion[] = [];
+    var completions: DispatchCompletion[] = [];
     var seen: Record<string, boolean> = {};
     for (var key in registry) {
         var instance = registry[key];
@@ -7293,7 +7305,9 @@ function dispatchToCandidates(
         seen[runtimeID] = true;
         completions.push(instance.dispatch(ctx, eventForRecipient(event, source, runtimeID)));
     }
-    return Promise.all(completions).then(function () {});
+    return Promise.all(completions).then(function (results) {
+        return results.some(function (queued) { return queued; });
+    });
 }
 
 function makeModel(
@@ -7448,7 +7462,7 @@ export function dispatchTo(
     ctx: Context,
     event: EventRecord,
     ...ids: string[]
-): Completion {
+): DispatchCompletion {
     return dispatchToCandidates(ctx, event, ids);
 }
 
@@ -7456,16 +7470,16 @@ export function dispatch(
     ctx: Context | null | undefined,
     dispatchable: Dispatchable | null | undefined,
     event: EventRecord,
-): Completion;
+): DispatchCompletion;
 export function dispatch(
     dispatchable: Dispatchable | null | undefined,
     event: EventRecord,
-): Completion;
+): DispatchCompletion;
 export function dispatch(
     ctxOrDispatchable: Context | Dispatchable | null | undefined,
     maybeDispatchableOrEvent: Dispatchable | EventRecord | null | undefined,
     maybeEvent?: EventRecord,
-): Completion {
+): DispatchCompletion {
     if (ctxOrDispatchable instanceof Context && arguments.length < 3) {
         var currentEvent = maybeDispatchableOrEvent as EventRecord | undefined;
         if (currentEvent) {
@@ -7474,7 +7488,7 @@ export function dispatch(
                 return current.dispatch(ctxOrDispatchable, currentEvent);
             }
         }
-        return errorCompletion(new Error("dispatch requires a started HSM"));
+        return dispatchErrorCompletion(new Error("dispatch requires a started HSM"));
     }
     var hasExplicitContext = arguments.length >= 3;
     var dispatchable = hasExplicitContext
@@ -7496,7 +7510,7 @@ export function dispatch(
         }
         return dispatchable.dispatch(ctx, event);
     }
-    return errorCompletion(new Error("dispatch requires a started HSM"));
+        return dispatchErrorCompletion(new Error("dispatch requires a started HSM"));
 }
 
 export function get(
@@ -7772,17 +7786,17 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
         return new Context(undefined, values);
     }
 
-    dispatch(event: GroupEventUnion<Members>): Completion;
-    dispatch(ctx: Context, event: GroupEventUnion<Members>): Completion;
-    dispatch(ctxOrEvent: Context | GroupEventUnion<Members>, maybeEvent?: GroupEventUnion<Members>): Completion {
+    dispatch(event: GroupEventUnion<Members>): DispatchCompletion;
+    dispatch(ctx: Context, event: GroupEventUnion<Members>): DispatchCompletion;
+    dispatch(ctxOrEvent: Context | GroupEventUnion<Members>, maybeEvent?: GroupEventUnion<Members>): DispatchCompletion {
         var self = this;
         var ctx = ctxOrEvent instanceof Context ? ctxOrEvent : this.context();
         var event = ctxOrEvent instanceof Context ? maybeEvent : ctxOrEvent;
         if (!event) {
-            return errorCompletion(new Error("dispatch requires an event"));
+            return dispatchErrorCompletion(new Error("dispatch requires an event"));
         }
         return Promise.resolve().then(function () {
-            var completions: Completion[] = [];
+            var completions: DispatchCompletion[] = [];
             var source = dispatchSourceFromContext(ctx);
             for (var i = 0; i < self.instances.length; i++) {
                 var runtime = runtimeFor(self.instances[i]);
@@ -7795,7 +7809,9 @@ export class Group<Members extends readonly unknown[] = readonly Instance[]> {
                 }
                 completions.push(self.instances[i].dispatch(ctx, eventForRecipient(event, source, runtime.id)));
             }
-            return Promise.all(completions).then(function () {});
+            return Promise.all(completions).then(function (results) {
+                return results.some(function (queued) { return queued; });
+            });
         });
     }
 

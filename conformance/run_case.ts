@@ -67,6 +67,7 @@ type Runner = {
     nextTimerID: number;
     pendingTimerFired: number;
     suppressTimerFired: number;
+    lastDispatchQueued: boolean | undefined;
     lastStableLabel: string | undefined;
     deferredEvents: DeferredEvent[];
     deferReplayBarrier: boolean;
@@ -206,6 +207,7 @@ function makeRunner(caseData: CaseData, file: string): Runner {
         nextTimerID: 1,
         pendingTimerFired: 0,
         suppressTimerFired: 0,
+        lastDispatchQueued: undefined,
         lastStableLabel: undefined,
         deferredEvents: [],
         deferReplayBarrier: false,
@@ -2001,7 +2003,7 @@ async function executeScriptStep(runner: Runner, step: AnyMap): Promise<void> {
             runner.trace.push({ type: "dispatch", event: event.name, target: "all" });
             const targets = [...runner.instances.values()];
             traceDeferredDispatch(runner, event.name, targets);
-            await hsm.DispatchAll(runner.ctx, event);
+            runner.lastDispatchQueued = await hsm.DispatchAll(runner.ctx, event);
             traceRuntimeDeferred(runner, targets, event.name);
             runner.lastStableLabel = "all";
             return;
@@ -2018,7 +2020,7 @@ async function executeScriptStep(runner: Runner, step: AnyMap): Promise<void> {
                 .map((id: string) => runner.instances.get(id))
                 .filter((instance: hsm.Instance | undefined): instance is hsm.Instance => instance !== undefined);
             traceDeferredDispatch(runner, event.name, targetInstances);
-            await hsm.DispatchTo(runner.ctx, event, ...targets);
+            runner.lastDispatchQueued = await hsm.DispatchTo(runner.ctx, event, ...targets);
             traceRuntimeDeferred(runner, targetInstances, event.name);
             runner.lastStableLabel = targets.length === 1 ? targets[0] : `targets:${targets.join(",")}`;
             return;
@@ -2032,7 +2034,7 @@ async function executeScriptStep(runner: Runner, step: AnyMap): Promise<void> {
             }
             const targets = instancesForGroup(runner, step.group);
             traceDeferredDispatch(runner, event.name, targets);
-            await group.dispatch(event as any);
+            runner.lastDispatchQueued = await group.dispatch(event as any);
             traceRuntimeDeferred(runner, targets, event.name);
             runner.lastStableLabel = `group:${step.group}`;
             return;
@@ -2100,7 +2102,7 @@ async function dispatchScriptEvent(runner: Runner, instanceID: string, eventRef:
             runner.deferReplayBarrier = true;
         }
     }
-    await instance.dispatch(event);
+    runner.lastDispatchQueued = await instance.dispatch(event);
     traceRuntimeDeferred(runner, [instance], event.name, undefined, traced);
     runner.lastStableLabel = instanceID;
 }
@@ -2572,6 +2574,9 @@ function instanceIDForInstance(runner: Runner, instance: hsm.Instance): string {
 }
 
 function assertExpectations(runner: Runner, expect: AnyMap): void {
+    if (expect.queued !== undefined && runner.lastDispatchQueued !== expect.queued) {
+        throw new Error(`dispatch queued mismatch: expected ${expect.queued}, got ${runner.lastDispatchQueued}`);
+    }
     if (expect.trace !== undefined) {
         assertDeepEqual(runner.trace, expect.trace, "trace");
     }
